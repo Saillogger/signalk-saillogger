@@ -18,8 +18,7 @@ const SUBMIT_INTERVAL = 15    // Submit to API every N minutes
 const MIN_DISTANCE = 0.5      // Update database if moved X miles
 const DB_UPDATE_MINUTES = 30  // Update database every N minutes (worst case)
 const SPEED_THRESHOLD = 0.15  // When to consider a vessel stopped (knots)
-//const API_BASE = 'https://saillogger.com/api/v1/collector'
-const API_BASE = 'http://davinci.ilkertemir.com:8888/api/v1/collector'
+const API_BASE = 'https://saillogger.com/api/v1/collector'
 
 const fs = require('fs')
 const filePath = require('path')
