@@ -18,7 +18,8 @@ const SUBMIT_INTERVAL = 15    // Submit to API every N minutes
 const MIN_DISTANCE = 0.5      // Update database if moved X miles
 const DB_UPDATE_MINUTES = 30  // Update database every N minutes (worst case)
 const SPEED_THRESHOLD = 0.15  // When to consider a vessel stopped (knots)
-const API_URI = 'https://saillogger.com/api/v1/boat/push'
+//const API_BASE = 'https://saillogger.com/api/v1/collector'
+const API_BASE = 'http://davinci.ilkertemir.com:8888/api/v1/collector'
 
 const fs = require('fs')
 const filePath = require('path')
@@ -44,6 +45,29 @@ module.exports = function(app) {
   plugin.description = "SailLogger plugin for Signal K";
 
   plugin.start = function(options) {
+    if (!options.uuid) {
+      app.error('Collector ID is required');
+      return
+    } 
+
+    let data = {
+      name: app.getSelfPath('name'),
+      mmsi: app.getSelfPath('mmsi'),
+      length: app.getSelfPath('design.length.value.overall'),
+      beam:  app.getSelfPath('design.beam.value'),
+      height:  app.getSelfPath('design.airHeight.value'),
+      ship_type: app.getSelfPath('design.aisShipType.value.id')
+    }
+
+    let postData = {
+      uri: API_BASE + '/' + options.uuid + '/update',
+      method: 'POST',
+      json: JSON.stringify(data)
+    };
+
+    request(postData, function (error, response, body) {
+    });
+    
     let dbFile= filePath.join(app.getDataDirPath(), 'saillogger.sqlite3');
     db = new sqlite3.Database(dbFile);
     db.run('CREATE TABLE IF NOT EXISTS buffer(ts REAL,' +
@@ -85,7 +109,7 @@ module.exports = function(app) {
         }
 
         let options = {
-          uri: API_URI,
+          uri: API_BASE + '/' + options.uuid + '/push',
           method: 'POST',
           json: JSON.stringify(data)
         };
@@ -107,11 +131,11 @@ module.exports = function(app) {
 
   plugin.schema = {
     type: 'object',
-    required: ['registration_id'],
+    required: ['uuid'],
     properties: {
-      registration_id: {
+      uuid: {
         type: "string",
-        title: "Registration ID (obtain from SailLogger.com)"
+        title: "Collector ID (obtain from SailLogger app)"
       },
     }
   }
@@ -194,7 +218,7 @@ module.exports = function(app) {
         break;
       case 'navigation.speedOverGround':
         // Keep the previous 3 values for speed
-        previousSpeeds.push(speedOverGround);
+        previousSpeeds.unshift(speedOverGround);
         previousSpeeds = previousSpeeds.slice(0, 3);
         speedOverGround = metersPerSecondToKnots(value);
         break;
