@@ -37,10 +37,8 @@ module.exports = function(app) {
   var position;
   var speedOverGround;
   var courseOverGroundTrue;
-  var previousCourseOverGroundTrue;
   var windSpeedApparent;
   var angleSpeedApparent;
-  var previousSpeeds = [];
 
   plugin.id = "signalk-saillogger";
   plugin.name = "SignalK SailLogger";
@@ -204,16 +202,8 @@ module.exports = function(app) {
                                              position.longitude,
                                              value.latitude,
                                              value.longitude);
-            if ((distance > MIN_DISTANCE) || ((speedOverGround <= SPEED_THRESHOLD) &&
-                (previousSpeeds.some(el => el > SPEED_THRESHOLD))) ||
-                ((speedOverGround > SPEED_THRESHOLD) &&
-		(previousSpeeds.some(el => el < SPEED_THRESHOLD))) ||
-                ((previousCourseOverGroundTrue) && (courseOverGroundTrue) &&
-                 (courseOverGroundTrue-previousCourseOverGroundTrue >= MIN_TURN)) ) {
+            if (distance >= MIN_DISTANCE) {
               // Update the database if we moved more than a minimum distance
-              // or we have recently slowed down to a stop, or we have
-              // recently gained speed from a standstill, or we have turned
-              // more than a predetermined amount
               position = value;
               position.changedOn = Date.now();
               updateDatabase();
@@ -225,13 +215,9 @@ module.exports = function(app) {
         }
         break;
       case 'navigation.speedOverGround':
-        // Keep the previous 3 values for speed
-        previousSpeeds.unshift(speedOverGround);
-        previousSpeeds = previousSpeeds.slice(0, 3);
         speedOverGround = metersPerSecondToKnots(value);
         break;
       case 'navigation.courseOverGroundTrue':
-        previousCourseOverGroundTrue = courseOverGroundTrue;
         courseOverGroundTrue = radiantToDegrees(value);
         break;
       case 'environment.wind.speedApparent':
