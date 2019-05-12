@@ -15,10 +15,12 @@
 
 const POLL_INTERVAL = 10      // Poll every N seconds
 const SUBMIT_INTERVAL = 15    // Submit to API every N minutes
-const MIN_DISTANCE = 0.5      // Update database if moved X miles
+const MIN_DISTANCE = 0.75     // Update database if moved X miles
+const MIN_TURN = 10           // Update database if turned X degrees
 const DB_UPDATE_MINUTES = 30  // Update database every N minutes (worst case)
-const SPEED_THRESHOLD = 0.15  // When to consider a vessel stopped (knots)
+const SPEED_THRESHOLD = 0.25  // When to consider a vessel stopped (knots)
 const API_BASE = 'https://saillogger.com/api/v1/collector'
+//const API_BASE = 'http://davinci.ilkertemir.com:8888/api/v1/collector'
 
 const fs = require('fs')
 const filePath = require('path')
@@ -35,6 +37,7 @@ module.exports = function(app) {
   var position;
   var speedOverGround;
   var courseOverGroundTrue;
+  var previousCourseOverGroundTrue;
   var windSpeedApparent;
   var angleSpeedApparent;
   var previousSpeeds = [];
@@ -107,13 +110,13 @@ module.exports = function(app) {
           return
         }
 
-        let options = {
+        let httpOptions = {
           uri: API_BASE + '/' + options.uuid + '/push',
           method: 'POST',
           json: JSON.stringify(data)
         };
 
-        request(options, function (error, response, body) {
+        request(httpOptions, function (error, response, body) {
           if (!error && response.statusCode == 200) {
             let lastTs = body.processedUntil;
             db.run('DELETE FROM buffer where ts <= ' + lastTs);
@@ -202,9 +205,15 @@ module.exports = function(app) {
                                              value.latitude,
                                              value.longitude);
             if ((distance > MIN_DISTANCE) || ((speedOverGround <= SPEED_THRESHOLD) &&
-                (previousSpeeds.some(el => el > SPEED_THRESHOLD)))) {
+                (previousSpeeds.some(el => el > SPEED_THRESHOLD))) ||
+                ((speedOverGround > SPEED_THRESHOLD) &&
+		(previousSpeeds.some(el => el < SPEED_THRESHOLD))) ||
+                ((previousCourseOverGroundTrue) && (courseOverGroundTrue) &&
+                 (courseOverGroundTrue-previousCourseOverGroundTrue >= MIN_TURN)) ) {
               // Update the database if we moved more than a minimum distance
-              // or we have recently slowed down to a stop
+              // or we have recently slowed down to a stop, or we have
+              // recently gained speed from a standstill, or we have turned
+              // more than a predetermined amount
               position = value;
               position.changedOn = Date.now();
               updateDatabase();
@@ -222,6 +231,7 @@ module.exports = function(app) {
         speedOverGround = metersPerSecondToKnots(value);
         break;
       case 'navigation.courseOverGroundTrue':
+        previousCourseOverGroundTrue = courseOverGroundTrue;
         courseOverGroundTrue = radiantToDegrees(value);
         break;
       case 'environment.wind.speedApparent':
