@@ -15,10 +15,9 @@
 
 const POLL_INTERVAL = 10      // Poll every N seconds
 const SUBMIT_INTERVAL = 15    // Submit to API every N minutes
-const MIN_DISTANCE = 0.75     // Update database if moved X miles
-const MIN_TURN = 10           // Update database if turned X degrees
-const DB_UPDATE_MINUTES = 10  // Update database every N minutes (worst case)
-const SPEED_THRESHOLD = 0.25  // When to consider a vessel stopped (knots)
+const MIN_DISTANCE = 0.50     // Update database if moved X miles
+const DB_UPDATE_MINUTES = 5   // Update database every N minutes (worst case)
+const SPEED_THRESHOLD = 1     // When to consider a vessel slowed down (knots)
 const API_BASE = 'https://saillogger.com/api/v1/collector'
 //const API_BASE = 'http://davinci.ilkertemir.com:8888/api/v1/collector'
 
@@ -39,6 +38,7 @@ module.exports = function(app) {
   var courseOverGroundTrue;
   var windSpeedApparent;
   var angleSpeedApparent;
+  var previousSpeeds = [];
 
   plugin.id = "signalk-saillogger";
   plugin.name = "SignalK SailLogger";
@@ -202,8 +202,14 @@ module.exports = function(app) {
                                              position.longitude,
                                              value.latitude,
                                              value.longitude);
-            if (distance >= MIN_DISTANCE) {
+	    if ( (distance > MIN_DISTANCE) || ((distance > MIN_DISTANCE/10) && 
+                 ((speedOverGround <= SPEED_THRESHOLD) &&
+                  (previousSpeeds.every(el => el > SPEED_THRESHOLD))) ||
+                 ((speedOverGround > SPEED_THRESHOLD) &&
+                  (previousSpeeds.every(el => el <= SPEED_THRESHOLD)))) ) {
               // Update the database if we moved more than a minimum distance
+              // or we have recently slowed down significantly, or we have
+              // recently gained speed from a relative standstill.
               position = value;
               position.changedOn = Date.now();
               updateDatabase();
@@ -215,6 +221,9 @@ module.exports = function(app) {
         }
         break;
       case 'navigation.speedOverGround':
+        // Keep the previous 3 values for speed
+        previousSpeeds.unshift(speedOverGround);
+        previousSpeeds = previousSpeeds.slice(0, 3);
         speedOverGround = metersPerSecondToKnots(value);
         break;
       case 'navigation.courseOverGroundTrue':
