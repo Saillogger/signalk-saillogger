@@ -151,8 +151,9 @@ module.exports = function(app) {
                   speedOverGround, courseOverGroundTrue, windSpeedApparent,
                   angleSpeedApparent];
 
-    db.run('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?)', values);
-    windSpeedApparent = 0;
+    db.run('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?)', values, function(err) {
+      windSpeedApparent = 0;
+    });
     position.changedOn = null;
   }
 
@@ -230,7 +231,7 @@ module.exports = function(app) {
         courseOverGroundTrue = radiantToDegrees(value);
         break;
       case 'environment.wind.speedApparent':
-        windSpeedApparent = Mat.max(windSpeedApparent, metersPerSecondToKnots(value));
+        windSpeedApparent = Math.max(windSpeedApparent, metersPerSecondToKnots(value));
         break;
       case 'environment.wind.angleApparent':
         angleSpeedApparent = radiantToDegrees(value);
