@@ -19,7 +19,6 @@ const MIN_DISTANCE = 0.50     // Update database if moved X miles
 const DB_UPDATE_MINUTES = 5   // Update database every N minutes (worst case)
 const SPEED_THRESHOLD = 1     // When to consider a vessel slowed down (knots)
 const API_BASE = 'https://saillogger.com/api/v1/collector'
-//const API_BASE = 'http://davinci.ilkertemir.com:8888/api/v1/collector'
 
 const fs = require('fs')
 const filePath = require('path')
@@ -135,7 +134,7 @@ module.exports = function(app) {
     properties: {
       uuid: {
         type: "string",
-        title: "Collector ID (obtain from SailLogger app)"
+        title: "Collector ID (obtain from saillogger.com)"
       },
     }
   }
