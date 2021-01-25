@@ -29,9 +29,11 @@ module.exports = function(app) {
   var plugin = {};
   var unsubscribes = [];
   var submitProcess;
+  var statusProcess;
   var db;
 
   var updateLastCalled = Date.now();
+  var lastSuccessfulUpdate;
   var position;
   var speedOverGround;
   var courseOverGroundTrue;
@@ -49,6 +51,7 @@ module.exports = function(app) {
       return
     } 
 
+    app.setPluginStatus('Saillogger started. Please wait for a status update.');
     let data = {
       name: app.getSelfPath('name'),
       mmsi: app.getSelfPath('mmsi'),
@@ -65,6 +68,9 @@ module.exports = function(app) {
     };
 
     request(postData, function (error, response, body) {
+      if (!error && response.statusCode == 200) {
+        lastSuccessfulUpdate = Date.now();
+      }
     });
     
     let dbFile= filePath.join(app.getDataDirPath(), 'saillogger.sqlite3');
@@ -117,14 +123,34 @@ module.exports = function(app) {
           if (!error && response.statusCode == 200) {
             let lastTs = body.processedUntil;
             db.run('DELETE FROM buffer where ts <= ' + lastTs);
+            lastSuccessfulUpdate = Date.now();
           }
         }); 
       });
     }, SUBMIT_INTERVAL * 60 * 1000);
+
+    statusProcess = setInterval( function() {
+      db.all('SELECT * FROM buffer ORDER BY ts', function(err, data) {
+        let message;
+        if (data.length == 1) {
+          message = `${data.length} entry in the queue,`;
+        } else {
+          message = `${data.length} entries in the queue,`;
+        }
+        if (lastSuccessfulUpdate) {
+          let since = timeSince(lastSuccessfulUpdate);
+          message += ` last connection to the server was ${since} ago.`;
+        } else {
+          message += ` no successful connection to the server since restart.`;
+        }
+        app.setPluginStatus(message);
+      })
+    }, 31*1000);
   }
 
   plugin.stop =  function() {
     clearInterval(submitProcess);
+    clearInterval(statusProcess);
     db.close();
   };
 
@@ -156,6 +182,32 @@ module.exports = function(app) {
     });
     position.changedOn = null;
   }
+
+  function timeSince(date) {
+    var seconds = Math.floor((new Date() - date) / 1000);
+    var interval = seconds / 31536000;
+    if (interval > 1) {
+      return Math.floor(interval) + " years";
+    }
+    interval = seconds / 2592000;
+    if (interval > 1) {
+      return Math.floor(interval) + " months";
+    }
+    interval = seconds / 86400;
+    if (interval > 1) {
+      return Math.floor(interval) + " days";
+    }
+    interval = seconds / 3600;
+    if (interval > 1) {
+      return Math.floor(interval) + " hours";
+    }
+    interval = seconds / 60;
+    if (interval > 1) {
+      return Math.floor(interval) + " minutes";
+    }
+    return Math.floor(seconds) + " seconds";
+  }
+
 
   function radiantToDegrees(rad) {
     return rad * 57.2958;
