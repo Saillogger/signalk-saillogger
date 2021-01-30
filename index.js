@@ -31,6 +31,7 @@ module.exports = function(app) {
   var submitProcess;
   var statusProcess;
   var db;
+  var gpsSource;
 
   var updateLastCalled = Date.now();
   var lastSuccessfulUpdate;
@@ -50,6 +51,7 @@ module.exports = function(app) {
       app.error('Collector ID is required');
       return
     } 
+    gpsSource = options.source;
 
     app.setPluginStatus('Saillogger started. Please wait for a status update.');
     let data = {
@@ -162,6 +164,10 @@ module.exports = function(app) {
         type: "string",
         title: "Collector ID (obtain from saillogger.com)"
       },
+      source: {
+        type: "string",
+        title: "GPS source (if you have multiple GPS sources and you want an explicit source)"
+      }
     }
   }
 
@@ -246,6 +252,11 @@ module.exports = function(app) {
 
     switch (path) {
       case 'navigation.position':
+        let source = data.updates[0]['$source'];
+        if ((gpsSource) && (source != gpsSource)) {
+          app.debug(`Skipping position from GPS resource ${source}`);
+	  break;
+	}
         if (position) {
           position.changedOn = Date.now();
      
@@ -255,14 +266,29 @@ module.exports = function(app) {
                                              position.longitude,
                                              value.latitude,
                                              value.longitude);
-	    if ( (distance > MIN_DISTANCE) || ((distance > MIN_DISTANCE/10) && 
+	    if (
+                 // Want submissions at every DB_UPDATE_MINUTES
+                 (timePassed >= DB_UPDATE_MINUTES * 60 * 1000) ||
+
+                 // Or we moved a meaningful distance
+                 (distance >= MIN_DISTANCE) ||
+
+                 // Or the boat has slowed down or has speeded up
                  ((speedOverGround <= SPEED_THRESHOLD) &&
                   (previousSpeeds.every(el => el > SPEED_THRESHOLD))) ||
                  ((speedOverGround > SPEED_THRESHOLD) &&
-                  (previousSpeeds.every(el => el <= SPEED_THRESHOLD)))) ) {
-              // Update the database if we moved more than a minimum distance
-              // or we have recently slowed down significantly, or we have
-              // recently gained speed from a relative standstill.
+                  (previousSpeeds.every(el => el <= SPEED_THRESHOLD))) ||
+
+                 ((speedOverGround <= SPEED_THRESHOLD * 2) &&
+                  (previousSpeeds.every(el => el > SPEED_THRESHOLD * 2))) ||
+                 ((speedOverGround > SPEED_THRESHOLD * 2) &&
+                  (previousSpeeds.every(el => el <= SPEED_THRESHOLD * 2))) ||
+
+                 ((speedOverGround <= SPEED_THRESHOLD * 3) &&
+                  (previousSpeeds.every(el => el > SPEED_THRESHOLD * 3))) ||
+                 ((speedOverGround > SPEED_THRESHOLD * 3) &&
+                  (previousSpeeds.every(el => el <= SPEED_THRESHOLD * 3)))
+               ) {
               position = value;
               position.changedOn = Date.now();
               updateDatabase();
@@ -291,10 +317,12 @@ module.exports = function(app) {
       default:
         app.error('Unknown path: ' + path);
     }
-    if (timePassed > DB_UPDATE_MINUTES * 60 * 1000) {
+    /*
+    if (timePassed > DB_UPDATE_MINUTES * 60 * 1000 + POLL_INTERVAL * 1000) {
       // Worst case update the DB every N minutes
       updateDatabase();
     }
+    */
   }
 
   return plugin;
