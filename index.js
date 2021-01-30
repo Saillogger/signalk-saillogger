@@ -13,12 +13,13 @@
  * limitations under the License.
  */
 
-const POLL_INTERVAL = 10          // Poll every N seconds
-const SUBMIT_INTERVAL = 15        // Submit to API every N minutes
-const MIN_DISTANCE = 0.50         // Update database if moved X miles
-const DB_UPDATE_MINUTES = 5       // Update database every N minutes (worst case)
-const SPEED_THRESHOLD = 1         // When to consider a vessel slowed down (knots)
-const MINIMUM_TURN_DEGREES =  20  // When to consider a vessel made a quick turn (degrees)
+const POLL_INTERVAL = 5            // Poll every N seconds
+const SUBMIT_INTERVAL = 15         // Submit to API every N minutes
+const MIN_DISTANCE = 0.50          // Update database if moved X miles
+const DB_UPDATE_MINUTES = 15       // Update database every N minutes (worst case)
+const DB_UPDATE_MINUTES_MOVING = 5 // Update database every N minutes while moving
+const SPEED_THRESHOLD = 1          // Speed threshold for moving (knots)
+const MINIMUM_TURN_DEGREES = 15    // Update database if turned more than N degrees
 const API_BASE = 'https://saillogger.com/api/v1/collector'
 
 const fs = require('fs')
@@ -76,6 +77,7 @@ module.exports = function(app) {
     request(postData, function (error, response, body) {
       if (!error && response.statusCode == 200) {
         lastSuccessfulUpdate = Date.now();
+        app.debug('Successfully sent metadata to the server');
       }
     });
     
@@ -130,6 +132,7 @@ module.exports = function(app) {
             let lastTs = body.processedUntil;
             db.run('DELETE FROM buffer where ts <= ' + lastTs);
             lastSuccessfulUpdate = Date.now();
+            app.debug('Successfully pushed data to the server');
           }
         }); 
       });
@@ -252,15 +255,35 @@ module.exports = function(app) {
     /*
       Returns true if vessel has made a significant turn
     */
-    if (previousCOGs.length < 3) {
+
+    if (previousCOGs.length < 6) {
       return (false);
     }
-    let delta = previousCOGs[2] - previousCOGs[0];
-    if (delta > MINIMUM_TURN_DEGREES) {
+    let delta = previousCOGs[5] - previousCOGs[0];
+    if (Math.abs(delta) > MINIMUM_TURN_DEGREES) {
+      app.debug(`Updating database, vessel turned ${delta} degrees`);
       return (true);
     } else {
       return (false);
     }
+  }
+
+  function vesselSlowedDownOrSpeededUp(threshold) {
+    /*
+      Returns true if vessel has gone above or below a speed threshold
+    */
+
+    if ((speedOverGround <= threshold) &&
+        (previousSpeeds.every(el => el > threshold)))  {
+      app.debug(`Updating database, vessel slowed down to ${speedOverGround} kt`);
+      return (true);
+    }
+    if ((speedOverGround > threshold) &&
+        (previousSpeeds.every(el => el <= threshold))) {
+      app.debug(`Updating database, vessel speeded up to ${speedOverGround} kt`);
+      return (true);
+    }
+    return (false);
   }
 
   function processDelta(data) {
@@ -279,40 +302,52 @@ module.exports = function(app) {
         if (position) {
           position.changedOn = Date.now();
      
+          // Don't push updates more than once every 1 minute
           if (timePassed >= 60 * 1000) {
-            // Don't push updates more than once every 1 minute
             let distance = calculateDistance(position.latitude,
                                              position.longitude,
                                              value.latitude,
                                              value.longitude);
-	    if (
-                 // Want submissions at every DB_UPDATE_MINUTES
-                 (timePassed >= DB_UPDATE_MINUTES * 60 * 1000) ||
 
-                 // Or we moved a meaningful distance
-                 (distance >= MIN_DISTANCE) ||
+            // updateDatabase() is split to multiple if conditions for better debug messages
 
-                 // Or we made a meaningful change of course
-                 (vesselMadeSignificantTurn()) ||
+            // Want submissions every DB_UPDATE_MINUTES at the very least
+	    if (timePassed >= DB_UPDATE_MINUTES * 60 * 1000) {
+              app.debug(`Updating database, ${DB_UPDATE_MINUTES} min passed since last update`);
+              position = value;
+              updateDatabase();
+            }
 
-                 // Or the boat has slowed down or has speeded up
-                 ((speedOverGround <= SPEED_THRESHOLD) &&
-                  (previousSpeeds.every(el => el > SPEED_THRESHOLD))) ||
-                 ((speedOverGround > SPEED_THRESHOLD) &&
-                  (previousSpeeds.every(el => el <= SPEED_THRESHOLD))) ||
+            // Or a meaningful time passed while moving
+            else if (
+              (speedOverGround > SPEED_THRESHOLD) &&
+              (timePassed >= DB_UPDATE_MINUTES_MOVING * 60 * 1000)
+            ) {
+              app.debug(`Updating database, ${DB_UPDATE_MINUTES_MOVING} min passed while moving`);
+              position = value;
+              updateDatabase();
+            }
 
-                 ((speedOverGround <= SPEED_THRESHOLD * 2) &&
-                  (previousSpeeds.every(el => el > SPEED_THRESHOLD * 2))) ||
-                 ((speedOverGround > SPEED_THRESHOLD * 2) &&
-                  (previousSpeeds.every(el => el <= SPEED_THRESHOLD * 2))) ||
+            // Or we moved a meaningful distance
+            else if (distance >= MIN_DISTANCE) {
+              app.debug(`Updating database, moved ${distance} miles`);
+              position = value;
+              updateDatabase();
+            }
 
-                 ((speedOverGround <= SPEED_THRESHOLD * 3) &&
-                  (previousSpeeds.every(el => el > SPEED_THRESHOLD * 3))) ||
-                 ((speedOverGround > SPEED_THRESHOLD * 3) &&
-                  (previousSpeeds.every(el => el <= SPEED_THRESHOLD * 3)))
+            // Or we made a meaningful change of course
+            else if (vesselMadeSignificantTurn()) {
+              position = value;
+              updateDatabase();
+            }
+
+            // Or the boat has slowed down or speeded up
+            else if (
+                 (vesselSlowedDownOrSpeededUp(SPEED_THRESHOLD)) ||
+                 (vesselSlowedDownOrSpeededUp(SPEED_THRESHOLD*2)) ||
+                 (vesselSlowedDownOrSpeededUp(SPEED_THRESHOLD*3))
                ) {
               position = value;
-              position.changedOn = Date.now();
               updateDatabase();
             }
           }
@@ -331,7 +366,7 @@ module.exports = function(app) {
         // Keep the previous 3 values
         courseOverGroundTrue = radiantToDegrees(value);
 	previousCOGs.unshift(courseOverGroundTrue);
-	previousCOGs = previousCOGs.slice(0, 3);
+	previousCOGs = previousCOGs.slice(0, 6);
         break;
       case 'environment.wind.speedApparent':
         windSpeedApparent = Math.max(windSpeedApparent, metersPerSecondToKnots(value));
