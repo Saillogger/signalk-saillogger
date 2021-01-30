@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Ilker Temir <ilker@ilkertemir.com>
+ * Copyright 2019-2021 Ilker Temir <ilker@ilkertemir.com>
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,17 +13,19 @@
  * limitations under the License.
  */
 
-const POLL_INTERVAL = 10      // Poll every N seconds
-const SUBMIT_INTERVAL = 15    // Submit to API every N minutes
-const MIN_DISTANCE = 0.50     // Update database if moved X miles
-const DB_UPDATE_MINUTES = 5   // Update database every N minutes (worst case)
-const SPEED_THRESHOLD = 1     // When to consider a vessel slowed down (knots)
+const POLL_INTERVAL = 10          // Poll every N seconds
+const SUBMIT_INTERVAL = 15        // Submit to API every N minutes
+const MIN_DISTANCE = 0.50         // Update database if moved X miles
+const DB_UPDATE_MINUTES = 5       // Update database every N minutes (worst case)
+const SPEED_THRESHOLD = 1         // When to consider a vessel slowed down (knots)
+const MINIMUM_TURN_DEGREES =  20  // When to consider a vessel made a quick turn (degrees)
 const API_BASE = 'https://saillogger.com/api/v1/collector'
 
 const fs = require('fs')
 const filePath = require('path')
 const request = require('request')
 const sqlite3 = require('sqlite3')
+const package = require('./package.json');
 
 module.exports = function(app) {
   var plugin = {};
@@ -41,6 +43,7 @@ module.exports = function(app) {
   var windSpeedApparent = 0;
   var angleSpeedApparent;
   var previousSpeeds = [];
+  var previousCOGs = [];
 
   plugin.id = "signalk-saillogger";
   plugin.name = "SignalK SailLogger";
@@ -60,7 +63,8 @@ module.exports = function(app) {
       length: app.getSelfPath('design.length.value.overall'),
       beam:  app.getSelfPath('design.beam.value'),
       height:  app.getSelfPath('design.airHeight.value'),
-      ship_type: app.getSelfPath('design.aisShipType.value.id')
+      ship_type: app.getSelfPath('design.aisShipType.value.id'),
+      version: package.version
     }
 
     let postData = {
@@ -166,7 +170,7 @@ module.exports = function(app) {
       },
       source: {
         type: "string",
-        title: "GPS source (if you have multiple GPS sources and you want an explicit source)"
+        title: "GPS source (only if you have multiple GPS sources and you want to use an explicit source)"
       }
     }
   }
@@ -244,6 +248,21 @@ module.exports = function(app) {
     }
   }
 
+  function vesselMadeSignificantTurn() {
+    /*
+      Returns true if vessel has made a significant turn
+    */
+    if (previousCOGs.length < 3) {
+      return (false);
+    }
+    let delta = previousCOGs[2] - previousCOGs[0];
+    if (delta > MINIMUM_TURN_DEGREES) {
+      return (true);
+    } else {
+      return (false);
+    }
+  }
+
   function processDelta(data) {
     let dict = data.updates[0].values[0];
     let path = dict.path;
@@ -273,6 +292,9 @@ module.exports = function(app) {
                  // Or we moved a meaningful distance
                  (distance >= MIN_DISTANCE) ||
 
+                 // Or we made a meaningful change of course
+                 (vesselMadeSignificantTurn()) ||
+
                  // Or the boat has slowed down or has speeded up
                  ((speedOverGround <= SPEED_THRESHOLD) &&
                   (previousSpeeds.every(el => el > SPEED_THRESHOLD))) ||
@@ -300,13 +322,16 @@ module.exports = function(app) {
         }
         break;
       case 'navigation.speedOverGround':
-        // Keep the previous 3 values for speed
+        // Keep the previous 3 values
+        speedOverGround = metersPerSecondToKnots(value);
         previousSpeeds.unshift(speedOverGround);
         previousSpeeds = previousSpeeds.slice(0, 3);
-        speedOverGround = metersPerSecondToKnots(value);
         break;
       case 'navigation.courseOverGroundTrue':
+        // Keep the previous 3 values
         courseOverGroundTrue = radiantToDegrees(value);
+	previousCOGs.unshift(courseOverGroundTrue);
+	previousCOGs = previousCOGs.slice(0, 3);
         break;
       case 'environment.wind.speedApparent':
         windSpeedApparent = Math.max(windSpeedApparent, metersPerSecondToKnots(value));
