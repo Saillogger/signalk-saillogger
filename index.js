@@ -14,7 +14,7 @@
  */
 
 const POLL_INTERVAL = 5            // Poll every N seconds
-const SUBMIT_INTERVAL = 15         // Submit to API every N minutes
+const SUBMIT_INTERVAL = 10         // Submit to API every N minutes
 const MIN_DISTANCE = 0.50          // Update database if moved X miles
 const DB_UPDATE_MINUTES = 15       // Update database every N minutes (worst case)
 const DB_UPDATE_MINUTES_MOVING = 5 // Update database every N minutes while moving
@@ -34,6 +34,7 @@ module.exports = function(app) {
   var submitProcess;
   var statusProcess;
   var db;
+  var uuid;
   var gpsSource;
 
   var updateLastCalled = Date.now();
@@ -55,6 +56,7 @@ module.exports = function(app) {
       app.error('Collector ID is required');
       return
     } 
+    uuid = options.uuid;
     gpsSource = options.source;
 
     app.setPluginStatus('Saillogger started. Please wait for a status update.');
@@ -76,8 +78,9 @@ module.exports = function(app) {
 
     request(postData, function (error, response, body) {
       if (!error && response.statusCode == 200) {
-        lastSuccessfulUpdate = Date.now();
         app.debug('Successfully sent metadata to the server');
+        lastSuccessfulUpdate = Date.now();
+        submitDataToServer();
       }
     });
     
@@ -116,26 +119,7 @@ module.exports = function(app) {
     }, data => processDelta(data));
 
     submitProcess = setInterval( function() {
-      db.all('SELECT * FROM buffer ORDER BY ts', function(err, data) {
-        if (data.length == 0) {
-          return
-        }
-
-        let httpOptions = {
-          uri: API_BASE + '/' + options.uuid + '/push',
-          method: 'POST',
-          json: JSON.stringify(data)
-        };
-
-        request(httpOptions, function (error, response, body) {
-          if (!error && response.statusCode == 200) {
-            let lastTs = body.processedUntil;
-            db.run('DELETE FROM buffer where ts <= ' + lastTs);
-            lastSuccessfulUpdate = Date.now();
-            app.debug('Successfully pushed data to the server');
-          }
-        }); 
-      });
+      submitDataToServer();
     }, SUBMIT_INTERVAL * 60 * 1000);
 
     statusProcess = setInterval( function() {
@@ -194,6 +178,30 @@ module.exports = function(app) {
       windSpeedApparent = 0;
     });
     position.changedOn = null;
+  }
+
+  function submitDataToServer() {
+    db.all('SELECT * FROM buffer ORDER BY ts', function(err, data) {
+      if (data.length == 0) {
+        app.debug('Nothing to send to the server, skipping');
+        return
+      }
+
+      let httpOptions = {
+        uri: API_BASE + '/' + uuid + '/push',
+        method: 'POST',
+        json: JSON.stringify(data)
+      };
+
+      request(httpOptions, function (error, response, body) {
+        if (!error && response.statusCode == 200) {
+          let lastTs = body.processedUntil;
+          db.run('DELETE FROM buffer where ts <= ' + lastTs);
+          lastSuccessfulUpdate = Date.now();
+          app.debug('Successfully pushed data to the server');
+        }
+      });
+    });
   }
 
   function timeSince(date) {
@@ -315,16 +323,18 @@ module.exports = function(app) {
 	    if (timePassed >= DB_UPDATE_MINUTES * 60 * 1000) {
               app.debug(`Updating database, ${DB_UPDATE_MINUTES} min passed since last update`);
               position = value;
+              position.changedOn = Date.now();
               updateDatabase();
             }
 
             // Or a meaningful time passed while moving
             else if (
-              (speedOverGround > SPEED_THRESHOLD) &&
+              (speedOverGround >= SPEED_THRESHOLD) &&
               (timePassed >= DB_UPDATE_MINUTES_MOVING * 60 * 1000)
             ) {
               app.debug(`Updating database, ${DB_UPDATE_MINUTES_MOVING} min passed while moving`);
               position = value;
+              position.changedOn = Date.now();
               updateDatabase();
             }
 
@@ -332,12 +342,16 @@ module.exports = function(app) {
             else if (distance >= MIN_DISTANCE) {
               app.debug(`Updating database, moved ${distance} miles`);
               position = value;
+              position.changedOn = Date.now();
               updateDatabase();
             }
 
-            // Or we made a meaningful change of course
-            else if (vesselMadeSignificantTurn()) {
+            // Or we made a meaningful change of course while moving
+            else if (
+              (speedOverGround >= SPEED_THRESHOLD) && (vesselMadeSignificantTurn())
+            ) {
               position = value;
+              position.changedOn = Date.now();
               updateDatabase();
             }
 
@@ -348,6 +362,7 @@ module.exports = function(app) {
                  (vesselSlowedDownOrSpeededUp(SPEED_THRESHOLD*3))
                ) {
               position = value;
+              position.changedOn = Date.now();
               updateDatabase();
             }
           }
@@ -377,12 +392,6 @@ module.exports = function(app) {
       default:
         app.error('Unknown path: ' + path);
     }
-    /*
-    if (timePassed > DB_UPDATE_MINUTES * 60 * 1000 + POLL_INTERVAL * 1000) {
-      // Worst case update the DB every N minutes
-      updateDatabase();
-    }
-    */
   }
 
   return plugin;
