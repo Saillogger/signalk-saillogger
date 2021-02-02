@@ -81,6 +81,8 @@ module.exports = function(app) {
         app.debug('Successfully sent metadata to the server');
         lastSuccessfulUpdate = Date.now();
         submitDataToServer();
+      } else {
+        app.debug('Metadata submission to the server failed');
       }
     });
     
@@ -153,7 +155,7 @@ module.exports = function(app) {
     properties: {
       uuid: {
         type: "string",
-        title: "Collector ID (obtain from saillogger.com)"
+        title: "Collector ID (obtain free from https://saillogger.com/collectors/)"
       },
       source: {
         type: "string",
@@ -198,7 +200,9 @@ module.exports = function(app) {
           let lastTs = body.processedUntil;
           db.run('DELETE FROM buffer where ts <= ' + lastTs);
           lastSuccessfulUpdate = Date.now();
-          app.debug('Successfully pushed data to the server');
+          app.debug(`Successfully sent ${data.length} record(s) to the server`);
+        } else {
+          app.debug(`Connection to the server failed, retry in ${SUBMIT_INTERVAL} min`);
         }
       });
     });
