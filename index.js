@@ -155,7 +155,7 @@ module.exports = function(app) {
     properties: {
       uuid: {
         type: "string",
-        title: "Collector ID (obtain free from https://saillogger.com/collectors/)"
+        title: "Collector ID (obtain free from https://saillogger.com/boats/)"
       },
       source: {
         type: "string",
