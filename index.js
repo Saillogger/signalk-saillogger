@@ -15,6 +15,7 @@
 
 const POLL_INTERVAL = 5            // Poll every N seconds
 const SUBMIT_INTERVAL = 10         // Submit to API every N minutes
+const MONITORING_SUBMIT_INTERVAL = 1  // Submit to API every N minutes
 const MIN_DISTANCE = 0.50          // Update database if moved X miles
 const DB_UPDATE_MINUTES = 15       // Update database every N minutes (worst case)
 const DB_UPDATE_MINUTES_MOVING = 5 // Update database every N minutes while moving
@@ -32,6 +33,7 @@ module.exports = function(app) {
   var plugin = {};
   var unsubscribes = [];
   var submitProcess;
+  var monitoringProcess;
   var statusProcess;
   var db;
   var uuid;
@@ -124,6 +126,10 @@ module.exports = function(app) {
       submitDataToServer();
     }, SUBMIT_INTERVAL * 60 * 1000);
 
+    monitoringProcess = setInterval( function() {
+      sendMonitoringData();
+    }, MONITORING_SUBMIT_INTERVAL * 60 * 1000);
+
     statusProcess = setInterval( function() {
       db.all('SELECT * FROM buffer ORDER BY ts', function(err, data) {
         let message;
@@ -145,6 +151,7 @@ module.exports = function(app) {
 
   plugin.stop =  function() {
     clearInterval(submitProcess);
+    clearInterval(monitoringProcess);
     clearInterval(statusProcess);
     db.close();
   };
@@ -208,6 +215,66 @@ module.exports = function(app) {
     });
   }
 
+  function getKeyValue(key, maxAge) {
+    let data = app.getSelfPath(key);
+    if (!data) {
+      return null;
+    }
+    let now = new Date();
+    let ts = new Date(data.timestamp);
+    let age = (now - ts) / 1000;
+    if (age <= maxAge) {
+      return data.value
+    } else {
+      return null;
+    }
+  }
+
+  /*
+    We keep Monitoring as an independent process. This doesn't have a cache.
+  */
+  function sendMonitoringData() {
+    let data = {
+      position: getKeyValue('navigation.position', 30),
+      sog: metersPerSecondToKnots(getKeyValue('navigation.speedOverGround', 30)),
+      cog: radiantToDegrees(getKeyValue('navigation.courseOverGroundTrue', 30)),
+      water: {
+      	depth: getKeyValue('environment.depth.belowTransducer', 10),
+        temperature: kelvinToCelsius(getKeyValue('environment.water.temperature', 90))
+      },
+      wind: {
+        speed: metersPerSecondToKnots(getKeyValue('environment.wind.speedTrue', 30)),
+        direction: radiantToDegrees(getKeyValue('environment.wind.directionTrue', 30))
+      },
+      pressure: getKeyValue('environment.outside.pressure', 90),
+      temperature: {
+        inside: kelvinToCelsius(getKeyValue('environment.inside.temperature', 90)),
+        outside: kelvinToCelsius(getKeyValue('environment.outside.temperature', 90))
+      },
+      humidity: {
+        inside: getKeyValue('environment.inside.humidity', 90),
+        outside: getKeyValue('environment.outside.humidity', 90)
+      },
+      battery: {
+        voltage: getKeyValue('electrical.batteries.battery2.voltage', 30),
+        charge: getKeyValue('electrical.batteries.battery2.capacity.stateOfCharge', 30)
+      }
+    }
+    let httpOptions = {
+      uri: API_BASE + '/monitoring/' + uuid + '/push',
+      method: 'POST',
+      json: JSON.stringify(data)
+    };
+
+    request(httpOptions, function (error, response, body) {
+      if (!error && response.statusCode == 200) {
+        app.debug('Monitoring data successfully submitted');
+      } else {
+        app.debug('Submission of monitoring data failed');
+      }
+    });
+  }
+
   function timeSince(date) {
     var seconds = Math.floor((new Date() - date) / 1000);
     var interval = seconds / 31536000;
@@ -233,13 +300,25 @@ module.exports = function(app) {
     return Math.floor(seconds) + " seconds";
   }
 
-
   function radiantToDegrees(rad) {
-    return rad * 57.2958;
+    if (rad == null) {
+      return null;
+    }
+    return Math.round(rad * 57.2958 * 10) / 10;
   }
 
   function metersPerSecondToKnots(ms) {
-    return ms * 1.94384;
+    if (ms == null) {
+      return null;
+    }
+    return Math.round(ms * 1.94384 * 10) / 10;
+  }
+
+  function kelvinToCelsius(deg) {
+    if (deg == null) {
+      return null;
+    }
+    return Math.round((deg - 273.15) * 10) / 10;
   }
 
   function calculateDistance(lat1, lon1, lat2, lon2) {
