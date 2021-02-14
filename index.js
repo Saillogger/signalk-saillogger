@@ -38,6 +38,7 @@ module.exports = function(app) {
   var db;
   var uuid;
   var gpsSource;
+  var batteryKey;
 
   var updateLastCalled = Date.now();
   var lastSuccessfulUpdate;
@@ -60,6 +61,7 @@ module.exports = function(app) {
     } 
     uuid = options.uuid;
     gpsSource = options.source;
+    batteryKey = options.battery;
 
     app.setPluginStatus('Saillogger started. Please wait for a status update.');
     let data = {
@@ -166,7 +168,11 @@ module.exports = function(app) {
       },
       source: {
         type: "string",
-        title: "GPS source (only if you have multiple GPS sources and you want to use an explicit source)"
+        title: "GPS source (Optional - only if you have multiple GPS sources and you want to use an explicit source)"
+      },
+      battery: {
+        type: "string",
+        title: "Main Battery key for monitoring (Optional)"
       }
     }
   }
@@ -256,8 +262,8 @@ module.exports = function(app) {
         outside: getKeyValue('environment.outside.humidity', 90)
       },
       battery: {
-        voltage: getKeyValue('electrical.batteries.battery2.voltage', 60),
-        charge: floatToPercentage(getKeyValue('electrical.batteries.battery2.capacity.stateOfCharge', 60))
+        voltage: getKeyValue(`electrical.batteries.${batteryKey}.voltage`, 60),
+        charge: floatToPercentage(getKeyValue(`electrical.batteries.${batteryKey}.capacity.stateOfCharge`, 60))
       }
     }
     let httpOptions = {
