@@ -1,7 +1,7 @@
 {
   "name": "signalk-saillogger",
   "version": "0.2.0",
-  "description": "Automatically log your sails with Saillogger",
+  "description": "Automatically log your sails and remotely monitor your boat",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
