@@ -235,18 +235,18 @@ module.exports = function(app) {
   */
   function sendMonitoringData() {
     let data = {
-      position: getKeyValue('navigation.position', 30),
-      sog: metersPerSecondToKnots(getKeyValue('navigation.speedOverGround', 30)),
-      cog: radiantToDegrees(getKeyValue('navigation.courseOverGroundTrue', 30)),
+      position: getKeyValue('navigation.position', 60),
+      sog: metersPerSecondToKnots(getKeyValue('navigation.speedOverGround', 60)),
+      cog: radiantToDegrees(getKeyValue('navigation.courseOverGroundTrue', 60)),
       water: {
       	depth: getKeyValue('environment.depth.belowTransducer', 10),
         temperature: kelvinToCelsius(getKeyValue('environment.water.temperature', 90))
       },
       wind: {
-        speed: metersPerSecondToKnots(getKeyValue('environment.wind.speedTrue', 30)),
-        direction: radiantToDegrees(getKeyValue('environment.wind.directionTrue', 30))
+        speed: metersPerSecondToKnots(getKeyValue('environment.wind.speedTrue', 60)),
+        direction: radiantToDegrees(getKeyValue('environment.wind.directionTrue', 60))
       },
-      pressure: getKeyValue('environment.outside.pressure', 90),
+      pressure: pascalToHectoPascal(getKeyValue('environment.outside.pressure', 90)),
       temperature: {
         inside: kelvinToCelsius(getKeyValue('environment.inside.temperature', 90)),
         outside: kelvinToCelsius(getKeyValue('environment.outside.temperature', 90))
@@ -256,8 +256,8 @@ module.exports = function(app) {
         outside: getKeyValue('environment.outside.humidity', 90)
       },
       battery: {
-        voltage: getKeyValue('electrical.batteries.battery2.voltage', 30),
-        charge: getKeyValue('electrical.batteries.battery2.capacity.stateOfCharge', 30)
+        voltage: getKeyValue('electrical.batteries.battery2.voltage', 60),
+        charge: floatToPercentage(getKeyValue('electrical.batteries.battery2.capacity.stateOfCharge', 60))
       }
     }
     let httpOptions = {
@@ -319,6 +319,20 @@ module.exports = function(app) {
       return null;
     }
     return Math.round((deg - 273.15) * 10) / 10;
+  }
+
+  function floatToPercentage(val) {
+    if (val == null) {
+      return null;
+    }
+    return val * 100;
+  }
+
+  function pascalToHectoPascal(pa) {
+    if (pa == null) {
+      return null;
+    }
+    return Math.round(pa/100*10)/10;
   }
 
   function calculateDistance(lat1, lon1, lat2, lon2) {
