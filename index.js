@@ -240,8 +240,14 @@ module.exports = function(app) {
     We keep Monitoring as an independent process. This doesn't have a cache.
   */
   function sendMonitoringData() {
+    let position = getKeyValue('navigation.position', 60);
+
+    if (position == null) {
+      return;
+    }
+
     let data = {
-      position: getKeyValue('navigation.position', 60),
+      position: position,
       sog: metersPerSecondToKnots(getKeyValue('navigation.speedOverGround', 60)),
       cog: radiantToDegrees(getKeyValue('navigation.courseOverGroundTrue', 60)),
       water: {
@@ -266,6 +272,7 @@ module.exports = function(app) {
         charge: floatToPercentage(getKeyValue(`electrical.batteries.${batteryKey}.capacity.stateOfCharge`, 60))
       }
     }
+
     let httpOptions = {
       uri: API_BASE + '/monitoring/' + uuid + '/push',
       method: 'POST',
