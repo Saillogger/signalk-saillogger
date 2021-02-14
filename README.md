@@ -20,6 +20,6 @@ Requires a free account on [saillogger.com](https://saillogger.com).
   <img src="./screenshots/screenshot1.png" height="380">
   <img src="./screenshots/screenshot2.png" width="640">
   <img src="./screenshots/screenshot4.jpg" width="320">
-  <img src="./screenshots/screenshot5.jpg" width="320">
   <img src="./screenshots/screenshot3.png" width="320">
+  <img src="./screenshots/screenshot5.jpg" width="320">
 </div>
