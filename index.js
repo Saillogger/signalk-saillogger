@@ -264,8 +264,8 @@ module.exports = function(app) {
         outside: kelvinToCelsius(getKeyValue('environment.outside.temperature', 90))
       },
       humidity: {
-        inside: getKeyValue('environment.inside.humidity', 90),
-        outside: getKeyValue('environment.outside.humidity', 90)
+        inside: floatToPercentage(getKeyValue('environment.inside.humidity', 90)),
+        outside: floatToPercentage(getKeyValue('environment.outside.humidity', 90))
       },
       battery: {
         voltage: getKeyValue(`electrical.batteries.${batteryKey}.voltage`, 60),
