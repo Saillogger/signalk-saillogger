@@ -20,7 +20,7 @@ const MIN_DISTANCE = 0.50          // Update database if moved X miles
 const DB_UPDATE_MINUTES = 15       // Update database every N minutes (worst case)
 const DB_UPDATE_MINUTES_MOVING = 5 // Update database every N minutes while moving
 const SPEED_THRESHOLD = 1          // Speed threshold for moving (knots)
-const MINIMUM_TURN_DEGREES = 15    // Update database if turned more than N degrees
+const MINIMUM_TURN_DEGREES = 25    // Update database if turned more than N degrees
 const API_BASE = 'https://saillogger.com/api/v1/collector'
 
 const fs = require('fs')
