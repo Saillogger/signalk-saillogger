@@ -16,6 +16,7 @@
 const POLL_INTERVAL = 5            // Poll every N seconds
 const SUBMIT_INTERVAL = 10         // Submit to API every N minutes
 const MONITORING_SUBMIT_INTERVAL = 1  // Submit to API every N minutes
+const SEND_METADATA_INTERVAL = 1   // Submit to API every N hours
 const MIN_DISTANCE = 0.50          // Update database if moved X miles
 const DB_UPDATE_MINUTES = 15       // Update database every N minutes (worst case)
 const DB_UPDATE_MINUTES_MOVING = 5 // Update database every N minutes while moving
@@ -34,6 +35,7 @@ module.exports = function(app) {
   var unsubscribes = [];
   var submitProcess;
   var monitoringProcess;
+  var sendMetadataProcess;
   var statusProcess;
   var db;
   var uuid;
@@ -64,32 +66,9 @@ module.exports = function(app) {
     batteryKey = options.battery;
 
     app.setPluginStatus('Saillogger started. Please wait for a status update.');
-    let data = {
-      name: app.getSelfPath('name'),
-      mmsi: app.getSelfPath('mmsi'),
-      length: app.getSelfPath('design.length.value.overall'),
-      beam:  app.getSelfPath('design.beam.value'),
-      height:  app.getSelfPath('design.airHeight.value'),
-      ship_type: app.getSelfPath('design.aisShipType.value.id'),
-      version: package.version
-    }
 
-    let postData = {
-      uri: API_BASE + '/' + options.uuid + '/update',
-      method: 'POST',
-      json: JSON.stringify(data)
-    };
+    sendMetadata();
 
-    request(postData, function (error, response, body) {
-      if (!error && response.statusCode == 200) {
-        app.debug('Successfully sent metadata to the server');
-        lastSuccessfulUpdate = Date.now();
-        submitDataToServer();
-      } else {
-        app.debug('Metadata submission to the server failed');
-      }
-    });
-    
     let dbFile= filePath.join(app.getDataDirPath(), 'saillogger.sqlite3');
     db = new sqlite3.Database(dbFile);
     db.run('CREATE TABLE IF NOT EXISTS buffer(ts REAL,' +
@@ -124,6 +103,10 @@ module.exports = function(app) {
       app.error('Subscription error');
     }, data => processDelta(data));
 
+    sendMetadataProcess = setInterval( function() {
+      sendMetadata();
+    }, SEND_METADATA_INTERVAL * 60 * 60 * 1000);
+
     submitProcess = setInterval( function() {
       submitDataToServer();
     }, SUBMIT_INTERVAL * 60 * 1000);
@@ -152,6 +135,7 @@ module.exports = function(app) {
   }
 
   plugin.stop =  function() {
+    clearInterval(sendMetadataProcess);
     clearInterval(submitProcess);
     clearInterval(monitoringProcess);
     clearInterval(statusProcess);
@@ -177,6 +161,35 @@ module.exports = function(app) {
     }
   }
 
+  function sendMetadata() {
+    let data = {
+      name: app.getSelfPath('name'),
+      mmsi: app.getSelfPath('mmsi'),
+      length: app.getSelfPath('design.length.value.overall'),
+      beam:  app.getSelfPath('design.beam.value'),
+      height:  app.getSelfPath('design.airHeight.value'),
+      ship_type: app.getSelfPath('design.aisShipType.value.id'),
+      version: package.version
+    }
+
+    let postData = {
+      uri: API_BASE + '/' + uuid + '/update',
+      method: 'POST',
+      json: JSON.stringify(data)
+    };
+
+    request(postData, function (error, response, body) {
+      if (!error && response.statusCode == 200) {
+        app.debug('Successfully sent metadata to the server');
+        lastSuccessfulUpdate = Date.now();
+	sendMonitoringData();
+	submitDataToServer();
+      } else {
+        app.debug('Metadata submission to the server failed');
+      }
+    });
+  }
+ 
   function updateDatabase() {
     let ts = Date.now();
     updateLastCalled = ts;
