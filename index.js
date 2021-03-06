@@ -169,7 +169,8 @@ module.exports = function(app) {
       beam:  app.getSelfPath('design.beam.value'),
       height:  app.getSelfPath('design.airHeight.value'),
       ship_type: app.getSelfPath('design.aisShipType.value.id'),
-      version: package.version
+      version: package.version,
+      signalk_version: app.config.version
     }
 
     let postData = {
@@ -189,7 +190,7 @@ module.exports = function(app) {
       }
     });
   }
- 
+
   function updateDatabase() {
     let ts = Date.now();
     updateLastCalled = ts;
