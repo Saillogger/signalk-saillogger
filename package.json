@@ -1,6 +1,6 @@
 {
   "name": "signalk-saillogger",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Automatically log your sails and remotely monitor your boat",
   "main": "index.js",
   "scripts": {

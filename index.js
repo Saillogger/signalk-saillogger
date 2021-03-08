@@ -264,6 +264,7 @@ module.exports = function(app) {
       position: position,
       sog: metersPerSecondToKnots(getKeyValue('navigation.speedOverGround', 60)),
       cog: radiantToDegrees(getKeyValue('navigation.courseOverGroundTrue', 60)),
+      heading: radiantToDegrees(getKeyValue('navigation.headingTrue', 60)),
       water: {
       	depth: getKeyValue('environment.depth.belowTransducer', 10),
         temperature: kelvinToCelsius(getKeyValue('environment.water.temperature', 90))
