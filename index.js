@@ -270,8 +270,8 @@ module.exports = function(app) {
         temperature: kelvinToCelsius(getKeyValue('environment.water.temperature', 90))
       },
       wind: {
-        speed: metersPerSecondToKnots(getKeyValue('environment.wind.speedTrue', 60)),
-        direction: radiantToDegrees(getKeyValue('environment.wind.directionTrue', 60))
+        speed: metersPerSecondToKnots(getKeyValue('environment.wind.speedOverGround', 60)),
+        direction: radiantToDegrees(getKeyValue('environment.wind.directionGround', 60))
       },
       pressure: pascalToHectoPascal(getKeyValue('environment.outside.pressure', 90)),
       temperature: {
