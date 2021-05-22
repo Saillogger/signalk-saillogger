@@ -433,15 +433,22 @@ module.exports = function(app) {
 	  break;
 	}
         if (position) {
+          let distance = calculateDistance(position.latitude,
+                                           position.longitude,
+                                           value.latitude,
+                                           value.longitude);
+	  let timeBetweenPositions = Date.now() - position.changedOn;
+	  if ((timeBetweenPositions <= 2 * 60 * 1000) && (distance >= 5)) {
+            app.error(`Erroneous position reading. ` +
+	              `Moved ${distance} miles in ${timeBetweenPositions/1000} seconds. ` +
+                      `Ignoring the position: ${position.latitude}, ${position.longitude}`);
+	    return;
+	  }
+
           position.changedOn = Date.now();
      
           // Don't push updates more than once every 1 minute
           if (timePassed >= 60 * 1000) {
-            let distance = calculateDistance(position.latitude,
-                                             position.longitude,
-                                             value.latitude,
-                                             value.longitude);
-
             // updateDatabase() is split to multiple if conditions for better debug messages
 
             // Want submissions every DB_UPDATE_MINUTES at the very least
