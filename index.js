@@ -285,6 +285,10 @@ module.exports = function(app) {
       battery: {
         voltage: getKeyValue(`electrical.batteries.${batteryKey}.voltage`, 60),
         charge: floatToPercentage(getKeyValue(`electrical.batteries.${batteryKey}.capacity.stateOfCharge`, 60))
+      },
+      anchor: {
+        position: getKeyValue('navigation.anchor.position', 60),
+        radius: getKeyValue('navigation.anchor.maxRadius', 60)
       }
     }
 
