@@ -139,7 +139,9 @@ module.exports = function(app) {
     clearInterval(submitProcess);
     clearInterval(monitoringProcess);
     clearInterval(statusProcess);
-    db.close();
+    if (db) {
+      db.close();
+    }
   };
 
   plugin.schema = {
