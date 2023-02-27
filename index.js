@@ -256,9 +256,10 @@ module.exports = function(app) {
     We keep Monitoring as an independent process. This doesn't have a cache.
   */
   function sendMonitoringData() {
-    let position = getKeyValue('navigation.position', 60);
+    let position = getKeyValue('navigation.position', 120);
 
     if (position == null) {
+      app.debug('No position data, not sending monitoring information.');
       return;
     }
 
