@@ -259,7 +259,15 @@ module.exports = function(app) {
     let position = getKeyValue('navigation.position', 120);
 
     if (position == null) {
-      app.debug('No position data, not sending monitoring information.');
+      // This is odd, let's debug
+      let data = app.getSelfPath('navigation.position');
+      if (!data) {
+        app.debug('No navigation.position for self.');
+        return;
+      }
+      let now = new Date();
+      let dataTs = new Date(data.timestamp);
+      app.debug(`No position data, not sending monitoring information (${now}, ${dataTs})`);
       return;
     }
 
@@ -273,8 +281,8 @@ module.exports = function(app) {
         temperature: kelvinToCelsius(getKeyValue('environment.water.temperature', 90))
       },
       wind: {
-        speed: metersPerSecondToKnots(getKeyValue('environment.wind.speedOverGround', 60)),
-        direction: radiantToDegrees(getKeyValue('environment.wind.directionGround', 60))
+        speed: metersPerSecondToKnots(getKeyValue('environment.wind.speedTrue', 60)),
+        direction: radiantToDegrees(getKeyValue('environment.wind.angleTrue', 60))
       },
       pressure: pascalToHectoPascal(getKeyValue('environment.outside.pressure', 90)),
       temperature: {
