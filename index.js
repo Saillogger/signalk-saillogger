@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 Ilker Temir <ilker@ilkertemir.com>
+ * Copyright 2019-2023 Ilker Temir <ilker@ilkertemir.com>
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -67,7 +67,7 @@ module.exports = function(app) {
 
     app.setPluginStatus('Saillogger started. Please wait for a status update.');
 
-    sendMetadata();
+    sendMetadata(options);
 
     let dbFile= filePath.join(app.getDataDirPath(), 'saillogger.sqlite3');
     db = new sqlite3.Database(dbFile);
@@ -104,7 +104,7 @@ module.exports = function(app) {
     }, data => processDelta(data));
 
     sendMetadataProcess = setInterval( function() {
-      sendMetadata();
+      sendMetadata(options);
     }, SEND_METADATA_INTERVAL * 60 * 60 * 1000);
 
     submitProcess = setInterval( function() {
@@ -112,7 +112,7 @@ module.exports = function(app) {
     }, SUBMIT_INTERVAL * 60 * 1000);
 
     monitoringProcess = setInterval( function() {
-      sendMonitoringData();
+      sendMonitoringData(options);
     }, MONITORING_SUBMIT_INTERVAL * 60 * 1000);
 
     statusProcess = setInterval( function() {
@@ -146,7 +146,9 @@ module.exports = function(app) {
 
   plugin.schema = {
     type: 'object',
-    required: ['uuid'],
+    required: ['uuid','depthKey','waterTemperatureKey','windSpeedKey',
+               'windDirectionKey','pressureKey','insideTemperatureKey',
+               'outsideTemperatureKey','insideHumidityKey','outsideHumidityKey'],
     properties: {
       uuid: {
         type: "string",
@@ -154,7 +156,53 @@ module.exports = function(app) {
       },
       source: {
         type: "string",
-        title: "GPS source (Optional - only if you have multiple GPS sources and you want to use an explicit source)"
+        title: "GPS source (Only if you have multiple GPS sources and you want " +
+               "to use an explicit source, important to leave empty if unsure)"
+      },
+      depthKey: {
+        type: "string",
+        default: "environment.depth.belowTransducer",
+        title: "Monitoring data source for depth"
+      },
+      waterTemperatureKey: {
+        type: "string",
+        default: "environment.water.temperature",
+        title: "Monitoring data source for water temperature"
+      },
+      windSpeedKey: {
+        type: "string",
+        default: "environment.wind.speedApparent",
+        title: "Monitoring data source for wind speed"
+      },
+      windDirectionKey: {
+        type: "string",
+        default: "environment.wind.angleApparent",
+        title: "Monitoring data source for wind direction"
+      },
+      pressureKey: {
+        type: "string",
+        default: "environment.outside.pressure",
+        title: "Monitoring data source for atmospheric pressure"
+      },
+      insideTemperatureKey: {
+        type: "string",
+        default: "environment.inside.temperature",
+        title: "Monitoring data source for inside temperature"
+      },
+      outsideTemperatureKey: {
+        type: "string",
+        default: "environment.outside.temperature",
+        title: "Monitoring data source for outside temperature"
+      },
+      insideHumidityKey: {
+        type: "string",
+        default: "environment.inside.humidity",
+        title: "Monitoring data source for inside humidity"
+      },
+      outsideHumidityKey: {
+        type: "string",
+        default: "environment.outside.humidity",
+        title: "Monitoring data source for outside humidity"
       },
       battery: {
         type: "string",
@@ -163,7 +211,7 @@ module.exports = function(app) {
     }
   }
 
-  function sendMetadata() {
+  function sendMetadata(options) {
     let data = {
       name: app.getSelfPath('name'),
       mmsi: app.getSelfPath('mmsi'),
@@ -185,7 +233,7 @@ module.exports = function(app) {
       if (!error && response.statusCode == 200) {
         app.debug('Successfully sent metadata to the server');
         lastSuccessfulUpdate = Date.now();
-	sendMonitoringData();
+	sendMonitoringData(options);
 	submitDataToServer();
       } else {
         app.debug('Metadata submission to the server failed');
@@ -255,9 +303,37 @@ module.exports = function(app) {
   /*
     We keep Monitoring as an independent process. This doesn't have a cache.
   */
-  function sendMonitoringData() {
-    let position = getKeyValue('navigation.position', 120);
+  function sendMonitoringData(options) {
+    // Below section is necessary for upgrades
+    if (!options.depthKey) {
+      options.depthKey = "environment.depth.belowTransducer";
+    }
+    if (!options.waterTemperatureKey) {
+      options.waterTemperatureKey = "environment.water.temperature";
+    }
+    if (!options.windSpeedKey) {
+      options.windSpeedKey = "environment.wind.speedApparent";
+    }
+    if (!options.windDirectionKey) {
+      options.windDirectionKey = "environment.wind.angleApparent";
+    }
+    if (!options.pressureKey) {
+      options.pressureKey = "environment.outside.pressure";
+    }
+    if (!options.insideTemperatureKey) {
+      options.insideTemperatureKey = "environment.inside.temperature";
+    }
+    if (!options.outsideTemperatureKey) {
+      options.outsideTemperatureKey = "environment.outside.temperature";
+    }
+    if (!options.insideHumidityKey) {
+      options.insideHumidityKey = "environment.inside.humidity";
+    }
+    if (!options.outsideHumidityKey) {
+      options.outsideHumidityKey = "environment.outside.humidity";
+    }
 
+    let position = getKeyValue('navigation.position', 120);
     if (position == null) {
       // This is odd, let's debug
       let data = app.getSelfPath('navigation.position');
@@ -277,21 +353,21 @@ module.exports = function(app) {
       cog: radiantToDegrees(getKeyValue('navigation.courseOverGroundTrue', 60)),
       heading: radiantToDegrees(getKeyValue('navigation.headingTrue', 60)),
       water: {
-      	depth: getKeyValue('environment.depth.belowTransducer', 10),
-        temperature: kelvinToCelsius(getKeyValue('environment.water.temperature', 90))
+        depth: getKeyValue(options.depthKey, 10),
+        temperature: kelvinToCelsius(getKeyValue(options.waterTemperatureKey, 90))
       },
       wind: {
-        speed: metersPerSecondToKnots(getKeyValue('environment.wind.speedTrue', 60)),
-        direction: radiantToDegrees(getKeyValue('environment.wind.angleTrue', 60))
+        speed: metersPerSecondToKnots(getKeyValue(options.windSpeedKey, 90)),
+        direction: radiantToDegrees(getKeyValue(options.windDirectionKey, 90))
       },
-      pressure: pascalToHectoPascal(getKeyValue('environment.outside.pressure', 90)),
+      pressure: pascalToHectoPascal(getKeyValue(options.pressureKey, 90)),
       temperature: {
-        inside: kelvinToCelsius(getKeyValue('environment.inside.temperature', 90)),
-        outside: kelvinToCelsius(getKeyValue('environment.outside.temperature', 90))
+        inside: kelvinToCelsius(getKeyValue(options.insideTemperatureKey, 90)),
+        outside: kelvinToCelsius(getKeyValue(options.outsideTemperatureKey, 90))
       },
       humidity: {
-        inside: floatToPercentage(getKeyValue('environment.inside.humidity', 90)),
-        outside: floatToPercentage(getKeyValue('environment.outside.humidity', 90))
+        inside: floatToPercentage(getKeyValue(options.insideHumidityKey, 90)),
+        outside: floatToPercentage(getKeyValue(options.outsideHumidityKey, 90))
       },
       battery: {
         voltage: getKeyValue(`electrical.batteries.${batteryKey}.voltage`, 60),
