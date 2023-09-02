@@ -22,12 +22,16 @@ const DB_UPDATE_MINUTES = 15       // Update database every N minutes (worst cas
 const DB_UPDATE_MINUTES_MOVING = 5 // Update database every N minutes while moving
 const SPEED_THRESHOLD = 1          // Speed threshold for moving (knots)
 const MINIMUM_TURN_DEGREES = 25    // Update database if turned more than N degrees
+const CONFIGURATION_PORT = 1977	   // Port number for configuration
 const API_BASE = 'https://saillogger.com/api/v1/collector'
 
 const fs = require('fs')
 const filePath = require('path')
 const request = require('request')
 const sqlite3 = require('sqlite3')
+const express = require('express')
+const bodyParser = require('body-parser')
+const cors = require('cors')
 const package = require('./package.json');
 
 module.exports = function(app) {
@@ -36,11 +40,13 @@ module.exports = function(app) {
   var submitProcess;
   var monitoringProcess;
   var sendMetadataProcess;
+  var metdataSubmitted = false;
   var statusProcess;
   var db;
   var uuid;
   var gpsSource;
   var batteryKey;
+  var configuration;
 
   var updateLastCalled = Date.now();
   var lastSuccessfulUpdate;
@@ -57,81 +63,8 @@ module.exports = function(app) {
   plugin.description = "SailLogger plugin for Signal K";
 
   plugin.start = function(options) {
-    if (!options.uuid) {
-      app.error('Collector ID is required');
-      return
-    } 
-    uuid = options.uuid;
-    gpsSource = options.source;
-    batteryKey = options.battery;
-
-    app.setPluginStatus('Saillogger started. Please wait for a status update.');
-
-    sendMetadata(options);
-
-    let dbFile= filePath.join(app.getDataDirPath(), 'saillogger.sqlite3');
-    db = new sqlite3.Database(dbFile);
-    db.run('CREATE TABLE IF NOT EXISTS buffer(ts REAL,' +
-           '                                 latitude REAL,' +
-           '                                 longitude REAL,' +
-           '                                 speedOverGround REAL,' +
-           '                                 courseOverGroundTrue REAL,' +
-           '                                 windSpeedApparent REAL,' +
-           '                                 angleSpeedApparent REAL)');
-    
-    let subscription = {
-      context: 'vessels.self',
-      subscribe: [{
-        path: 'navigation.position',
-        period: POLL_INTERVAL * 1000
-      }, {
-        path: 'navigation.speedOverGround',
-        period: POLL_INTERVAL * 1000
-      }, {
-        path: 'navigation.courseOverGroundTrue',
-        period: POLL_INTERVAL * 1000
-      }, {
-        path: 'environment.wind.speedApparent',
-        period: POLL_INTERVAL * 1000
-      }, {
-        path: 'environment.wind.angleApparent',
-        period: POLL_INTERVAL * 1000
-      }]
-    };
-
-    app.subscriptionmanager.subscribe(subscription, unsubscribes, function() {
-      app.error('Subscription error');
-    }, data => processDelta(data));
-
-    sendMetadataProcess = setInterval( function() {
-      sendMetadata(options);
-    }, SEND_METADATA_INTERVAL * 60 * 60 * 1000);
-
-    submitProcess = setInterval( function() {
-      submitDataToServer();
-    }, SUBMIT_INTERVAL * 60 * 1000);
-
-    monitoringProcess = setInterval( function() {
-      sendMonitoringData(options);
-    }, MONITORING_SUBMIT_INTERVAL * 60 * 1000);
-
-    statusProcess = setInterval( function() {
-      db.all('SELECT * FROM buffer ORDER BY ts', function(err, data) {
-        let message;
-        if (data.length == 1) {
-          message = `${data.length} entry in the queue,`;
-        } else {
-          message = `${data.length} entries in the queue,`;
-        }
-        if (lastSuccessfulUpdate) {
-          let since = timeSince(lastSuccessfulUpdate);
-          message += ` last connection to the server was ${since} ago.`;
-        } else {
-          message += ` no successful connection to the server since restart.`;
-        }
-        app.setPluginStatus(message);
-      })
-    }, 31*1000);
+    configuration = options;
+    startPlugin(options);
   }
 
   plugin.stop =  function() {
@@ -211,7 +144,184 @@ module.exports = function(app) {
     }
   }
 
+  function startPlugin(options) {
+    if ( isVenusOS() ) {
+      let model = getVictronDeviceModel();
+      app.debug(`Running on Venus OS (Victron ${model})`);
+    }
+
+    if (!options.uuid) {
+      if ( isVenusOS() ) {
+        // We spin up the automatic configuration interface for Venus OS only
+        app.debug('Collector ID is required, going into configuration mode');
+        setupWebServerForConfiguration();
+      }
+      return
+    } else {
+      app.debug(`Starting the plugin with collector ID ${options.uuid}`);
+    }
+
+    uuid = options.uuid;
+    gpsSource = options.source;
+    batteryKey = options.battery;
+
+    app.setPluginStatus('Saillogger started. Please wait for a status update.');
+
+    sendMetadata(options);
+
+    let dbFile= filePath.join(app.getDataDirPath(), 'saillogger.sqlite3');
+    db = new sqlite3.Database(dbFile);
+    db.run('CREATE TABLE IF NOT EXISTS buffer(ts REAL,' +
+           '                                 latitude REAL,' +
+           '                                 longitude REAL,' +
+           '                                 speedOverGround REAL,' +
+           '                                 courseOverGroundTrue REAL,' +
+           '                                 windSpeedApparent REAL,' +
+           '                                 angleSpeedApparent REAL)');
+    
+    let subscription = {
+      context: 'vessels.self',
+      subscribe: [{
+        path: 'navigation.position',
+        period: POLL_INTERVAL * 1000
+      }, {
+        path: 'navigation.speedOverGround',
+        period: POLL_INTERVAL * 1000
+      }, {
+        path: 'navigation.courseOverGroundTrue',
+        period: POLL_INTERVAL * 1000
+      }, {
+        path: 'environment.wind.speedApparent',
+        period: POLL_INTERVAL * 1000
+      }, {
+        path: 'environment.wind.angleApparent',
+        period: POLL_INTERVAL * 1000
+      }]
+    };
+
+    app.subscriptionmanager.subscribe(subscription, unsubscribes, function() {
+      app.error('Subscription error');
+    }, data => processDelta(data));
+
+    sendMetadataProcess = setInterval( function() {
+      sendMetadata(options);
+    }, SEND_METADATA_INTERVAL * 60 * 60 * 1000);
+
+    submitProcess = setInterval( function() {
+      submitDataToServer();
+    }, SUBMIT_INTERVAL * 60 * 1000);
+
+    monitoringProcess = setInterval( function() {
+      sendMonitoringData(options);
+    }, MONITORING_SUBMIT_INTERVAL * 60 * 1000);
+
+    statusProcess = setInterval( function() {
+      db.all('SELECT * FROM buffer ORDER BY ts', function(err, data) {
+        let message;
+        if (data.length == 1) {
+          message = `${data.length} entry in the queue,`;
+        } else {
+          message = `${data.length} entries in the queue,`;
+        }
+        if (lastSuccessfulUpdate) {
+          let since = timeSince(lastSuccessfulUpdate);
+          message += ` last connection to the server was ${since} ago.`;
+        } else {
+          message += ` no successful connection to the server since restart.`;
+        }
+        app.setPluginStatus(message);
+      })
+    }, 31*1000);
+  }
+
+  function isVenusOS() {
+    return (fs.existsSync('/etc/venus'));
+  }
+
+  function getVictronDeviceModel() {
+    if (!isVenusOS()) {
+      return (null);
+    }
+    var name;
+    try {
+      name = require('child_process').execSync('/usr/bin/product-name', {stdio : 'pipe' }).toLocaleString()
+    } catch {
+      name = null;
+    }
+    return name;
+  }
+
+  function setupWebServerForConfiguration() {
+    var expressApp = express();
+    var corsOptions = {
+      origin: 'http://static.saillogger.com',
+      optionsSuccessStatus: 200
+    }
+    expressApp.use(cors(corsOptions));
+    expressApp.use(bodyParser.urlencoded({
+      extended: true,
+    }));
+
+    expressApp.post('/registerCollector', function (req, res, next) { 
+      const model = getVictronDeviceModel();
+      if (configuration.uuid) {
+        app.debug(`Received a configuration request but collector id already set, ignoring`);
+        return res.json({
+          success: false,
+	  reason: 'CollectorID already set',
+	  model: model
+        });
+      }
+      let collectorId = req.body.collectorId;
+      app.debug(`Received request to configure collector with ${collectorId}`);
+      if (!collectorId) {
+        res.json({
+          success: false,
+          reason: 'No CollectorID',
+          model: model
+        });
+      } else {
+        configuration.uuid = collectorId;
+        app.savePluginOptions(configuration, () => {
+          app.debug(`Collector ID saved (${collectorId}), restarting the plugin`);
+          // Start the plugin with proper collectorId now
+          startPlugin(configuration);
+          res.json({
+            success: true,
+	    reason: null,
+	    model: model
+          });
+        });
+      }
+    })
+
+    expressApp.listen(CONFIGURATION_PORT, function () {
+      app.debug(`Configuration web server listening on port ${CONFIGURATION_PORT}`);
+    })
+  }
+
   function sendMetadata(options) {
+    if (metdataSubmitted == true) {
+      // We only need one successful metada submission per reboot
+      app.debug('Metada already submitted, not resubmitting');
+      return;
+    }
+    let platform = '';
+    try {
+      const cpuInfo = fs.readFileSync('/proc/cpuinfo', { encoding: 'utf8', flag: 'r' });
+      let re = /Model\s*:\s*([^\n]+)/i;
+      let found = cpuInfo.match(re);
+      if (found) {
+        platform += found[1];
+      }
+      re = /Model Name\s*:\s*([^\n]+)/i;
+      found = cpuInfo.match(re);
+      if (found) {
+        platform += ' ' + found[1];
+      } 
+    } catch (err) {
+      app.debug('Cannot find /proc/cpuinfo');
+    }
     let data = {
       name: app.getSelfPath('name'),
       mmsi: app.getSelfPath('mmsi'),
@@ -220,7 +330,8 @@ module.exports = function(app) {
       height:  app.getSelfPath('design.airHeight.value'),
       ship_type: app.getSelfPath('design.aisShipType.value.id'),
       version: package.version,
-      signalk_version: app.config.version
+      signalk_version: app.config.version,
+      platform: platform
     }
 
     let postData = {
@@ -235,6 +346,7 @@ module.exports = function(app) {
         lastSuccessfulUpdate = Date.now();
 	sendMonitoringData(options);
 	submitDataToServer();
+        metdataSubmitted = true;
       } else {
         app.debug('Metadata submission to the server failed');
       }

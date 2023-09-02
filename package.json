@@ -1,8 +1,9 @@
 {
   "name": "signalk-saillogger",
-  "version": "1.1.0",
-  "description": "Automatically log your sails and remotely monitor your boat",
+  "version": "2.0.0",
+  "description": "Maintenance-free, fully automated log book and remote boat monitoring solution",
   "main": "index.js",
+  "signalk-plugin-enabled-by-default": true,
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -12,6 +13,8 @@
   "author": "Ilker Temir",
   "license": "Apache-2.0",
   "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
     "request": "^2.88.0",
     "sqlite3": "^5.0.2"
   },
@@ -22,6 +25,5 @@
   "bugs": {
     "url": "https://github.com/itemir/signalk-saillogger/issues"
   },
-  "homepage": "https://github.com/itemir/signalk-saillogger#readme",
-  "devDependencies": {}
+  "homepage": "https://github.com/itemir/signalk-saillogger#readme"
 }
