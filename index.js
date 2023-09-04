@@ -145,10 +145,8 @@ module.exports = function(app) {
   }
 
   function startPlugin(options) {
-    if ( isVenusOS() ) {
-      let model = getVictronDeviceModel();
-      app.debug(`Running on Venus OS (Victron ${model})`);
-    }
+    let platform = findPlatform();
+    app.debug(`Running on ${platform}`);
 
     if (!options.uuid) {
       if ( isVenusOS() ) {
@@ -300,12 +298,13 @@ module.exports = function(app) {
     })
   }
 
-  function sendMetadata(options) {
-    if (metdataSubmitted == true) {
-      // We only need one successful metada submission per reboot
-      app.debug('Metada already submitted, not resubmitting');
-      return;
+  // Find the platform we are running on
+  function findPlatform() {
+    if ( isVenusOS() ) {
+      let platform = `Victron ${getVictronDeviceModel()}`;
+      return platform;
     }
+
     let platform = '';
     try {
       const cpuInfo = fs.readFileSync('/proc/cpuinfo', { encoding: 'utf8', flag: 'r' });
@@ -322,6 +321,15 @@ module.exports = function(app) {
     } catch (err) {
       app.debug('Cannot find /proc/cpuinfo');
     }
+    return platform;
+  }
+
+  function sendMetadata(options) {
+    if (metdataSubmitted == true) {
+      // We only need one successful metada submission per reboot
+      app.debug('Metada already submitted, not resubmitting');
+      return;
+    }
     let data = {
       name: app.getSelfPath('name'),
       mmsi: app.getSelfPath('mmsi'),
@@ -331,7 +339,7 @@ module.exports = function(app) {
       ship_type: app.getSelfPath('design.aisShipType.value.id'),
       version: package.version,
       signalk_version: app.config.version,
-      platform: platform
+      platform: findPlatform()
     }
 
     let postData = {
@@ -374,8 +382,7 @@ module.exports = function(app) {
   function submitDataToServer() {
     db.all('SELECT * FROM buffer ORDER BY ts', function(err, data) {
       if (data.length == 0) {
-        app.debug('Nothing to send to the server, skipping');
-        return
+        app.debug('Local cache is empty, sending an empty ping');
       }
 
       let httpOptions = {
@@ -390,6 +397,8 @@ module.exports = function(app) {
           db.run('DELETE FROM buffer where ts <= ' + lastTs);
           lastSuccessfulUpdate = Date.now();
           app.debug(`Successfully sent ${data.length} record(s) to the server`);
+        } else if (!error && response.statusCode == 204) {
+          app.debug('Server responded with HTTP-204');
         } else {
           app.debug(`Connection to the server failed, retry in ${SUBMIT_INTERVAL} min`);
         }
