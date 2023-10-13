@@ -1,5 +1,5 @@
 # Saillogger
-Saillogger is a fully automated and maintenance-free marine log book and monitoring solution built by boaters for boaters. 
+Saillogger is a fully automated and maintenance-free marine logbook and monitoring solution built by boaters for boaters.
 
 Saillogger automatically logs the details of your trips. These include track, speed, distance, wind speed, etc. Each trip is automatically detected and logged without requiring you take any action like starting or stopping a trip. It builds and maintains a digital memory for you and your boat.
 
@@ -11,14 +11,14 @@ One of the most popular features is an actual timelapse of your boat, it animate
 
 A monitoring function allows you to see your boat's status while you are away from the boat and have a peace of mind. You can also configure e-mail and push notifications to your phone.
 
-Your information stays private unless you explicitly decide to make it available publicly. If you choose to do so, your friends, family and others can access your statistics, log book entries, timelapse or monitoring information. You can configure each individually, for example you can make your timelapse public but keep everything else private if you wish.
+Your information stays private unless you explicitly decide to make it available publicly. If you choose to do so, your friends, family and others can access your statistics, logbook entries, timelapse or monitoring information. You can configure each individually, for example you can make your timelapse public but keep everything else private if you wish.
 
 Saillogger is a cloud based solution and requires an account on [Saillogger.com](https://saillogger.com). It also requires occassional Internet connectivity from your boat. Data is cached locally so you can go extended times without an Internet connection, data is uploaded when your boat becomes online.
 
 You can find more information on [Saillogger.com](https://saillogger.com/support/)
 
 ## Features
-* Maintenance free marine log book
+* Maintenance free marine logbook
 * Remote monitoring of your boat when you are not there (position, weather, depth, and more)
 * Automatically logging trips without manually starting or stopping anything
 * Automatically capturing the details of your stays
