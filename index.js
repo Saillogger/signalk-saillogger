@@ -252,7 +252,7 @@ module.exports = function(app) {
   function setupWebServerForConfiguration() {
     var expressApp = express();
     var corsOptions = {
-      origin: 'http://static.saillogger.com',
+      origin: 'http://cdn.saillogger.com',
       optionsSuccessStatus: 200
     }
     expressApp.use(cors(corsOptions));
