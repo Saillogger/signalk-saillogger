@@ -3,11 +3,11 @@ Saillogger is a fully automated and maintenance-free marine logbook and monitori
 
 Saillogger automatically logs the details of your trips. These include track, speed, distance, wind speed, etc. Each trip is automatically detected and logged without requiring you take any action like starting or stopping a trip. It builds and maintains a digital memory for you and your boat.
 
-At the end of each trip, a new log entry is automatically created, marking start and destination moorages. The time you spent at moorages will also be logged under Stays (e.g. Stayed 3 days in Eagle Harbor at anchor). You may need to manually categorize your stay as at anchor, mooring buoy or dock. If you choose to do so, that is the only manual thing to do, and it is completely optional. And if you classify a stay, Saillogger will remember it the next time you visit the same moorage.
+At the end of each trip, a new log entry is automatically created, marking start and destination moorages. The time you spent at moorages will also be logged under Stays (e.g. Stayed 3 days in Glacier Bay at anchor). You may need to manually categorize your stay as at anchor, mooring buoy or dock. If you choose to do so, that is the only manual thing to do, and it is completely optional. And if you classify a stay, Saillogger will remember it the next time you visit the same moorage.
 
-Saillogger aggregates information about your trips and provides you statistics including the number of trips, moorages you have been to, countries you have visited, longest passages, time you spent at anchor, mooring buoys and more The easiest may be to look at the [statistics of one of our founders](https://saillogger.com/stats/7/) as an example.
+Saillogger aggregates information about your trips and provides you statistics including the number of trips, moorages you have been to, countries you have visited, longest passages, time you spent at anchor, mooring buoys and more. The easiest may be to log in [with a demo account](https://saillogger.com/demo/) and test all the features for yourself.
 
-One of the most popular features is an actual timelapse of your boat, it animates actual movements of your boat on a map using precise navigational information. See an [example](https://saillogger.com/timelapse/2/?start_date=2019-05-15&end_date=2020-01-31&speed=35&zoom=8) for a multi-week sail along the California coast between San Francisco and Ensenada.
+One of the most popular features is an actual timelapse of your boat, it animates actual movements of your boat on a map using precise navigational information. See an [example](https://saillogger.com/timelapse/542/) for a cruise from Seatte to Alaska along the Inside Passage.
 
 A monitoring function allows you to see your boat's status while you are away from the boat and have a peace of mind. You can also configure e-mail and push notifications to your phone.
 

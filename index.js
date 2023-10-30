@@ -109,7 +109,7 @@ module.exports = function(app) {
       },
       windDirectionKey: {
         type: "string",
-        default: "environment.wind.angleApparent",
+        default: "environment.wind.directionTrue",
         title: "Monitoring data source for wind direction"
       },
       pressureKey: {
