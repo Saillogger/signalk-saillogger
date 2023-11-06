@@ -339,7 +339,8 @@ module.exports = function(app) {
       ship_type: app.getSelfPath('design.aisShipType.value.id'),
       version: package.version,
       signalk_version: app.config.version,
-      platform: findPlatform()
+      platform: findPlatform(),
+      configuration: configuration
     }
 
     let postData = {
