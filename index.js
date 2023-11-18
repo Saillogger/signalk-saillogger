@@ -381,7 +381,7 @@ module.exports = function(app) {
   }
 
   function submitDataToServer() {
-    db.all('SELECT * FROM buffer ORDER BY ts', function(err, data) {
+    db.all('SELECT * FROM buffer ORDER BY ts LIMIT 250', function(err, data) {
       if (data.length == 0) {
         app.debug('Local cache is empty, sending an empty ping');
       }

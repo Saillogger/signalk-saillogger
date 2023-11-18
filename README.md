@@ -7,7 +7,7 @@ At the end of each trip, a new log entry is automatically created, marking start
 
 Saillogger aggregates information about your trips and provides you statistics including the number of trips, moorages you have been to, countries you have visited, longest passages, time you spent at anchor, mooring buoys and more. The easiest may be to log in [with a demo account](https://saillogger.com/demo/) and test all the features for yourself.
 
-One of the most popular features is an actual timelapse of your boat, it animates actual movements of your boat on a map using precise navigational information. See an [example](https://saillogger.com/timelapse/542/) for a cruise from Seatte to Alaska along the Inside Passage.
+One of the most popular features is an actual timelapse of your boat, it animates actual movements of your boat on a map using precise navigational information. See an [example](https://saillogger.com/mvelysian/timelapse) for a cruise from Seatte to Alaska along the Inside Passage.
 
 A monitoring function allows you to see your boat's status while you are away from the boat and have a peace of mind. You can also configure e-mail and push notifications to your phone.
 
@@ -22,10 +22,10 @@ You can find more information on [Saillogger.com](https://saillogger.com/support
 * Remote monitoring of your boat when you are not there (position, weather, depth, and more)
 * Automatically logging trips without manually starting or stopping anything
 * Automatically capturing the details of your stays
-* Customizable timelapse of your trips with actual, precise navigation information ([See example](https://saillogger.com/timelapse/2/?start_date=2019-05-15&end_date=2020-01-31&speed=35&zoom=8))
+* Customizable timelapse of your trips with actual, precise navigation information ([See example](https://saillogger.com/mvelysian/timelapse))
 * Custom notes for logs and stays
 * Export and download of logs
-* Agrregated statistics: Number of trips, distance covered, time spent at anchorages, home ports etc. ([See example](https://saillogger.com/stats/7/))
+* Agrregated statistics: Number of trips, distance covered, time spent at anchorages, home ports etc. ([See example](https://saillogger.com/stats/542))
 * A global map built for you based on your trips
 
 ## Sample Screenshots
