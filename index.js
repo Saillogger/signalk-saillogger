@@ -33,6 +33,7 @@ const express = require('express')
 const bodyParser = require('body-parser')
 const cors = require('cors')
 const package = require('./package.json');
+const userAgent = `Saillogger plugin v${package.version}`;
 
 module.exports = function(app) {
   var plugin = {};
@@ -347,7 +348,10 @@ module.exports = function(app) {
     let postData = {
       uri: API_BASE + '/' + uuid + '/update',
       method: 'POST',
-      json: JSON.stringify(data)
+      json: JSON.stringify(data),
+      headers: {
+        'User-Agent': userAgent,
+      }
     };
 
     request(postData, function (error, response, body) {
@@ -391,7 +395,10 @@ module.exports = function(app) {
       let httpOptions = {
         uri: API_BASE + '/' + uuid + '/push',
         method: 'POST',
-        json: JSON.stringify(data)
+        json: JSON.stringify(data),
+        headers: {
+          'User-Agent': userAgent,
+        }
       };
 
       request(httpOptions, function (error, response, body) {
@@ -506,7 +513,10 @@ module.exports = function(app) {
     let httpOptions = {
       uri: API_BASE + '/monitoring/' + uuid + '/push',
       method: 'POST',
-      json: JSON.stringify(data)
+      json: JSON.stringify(data),
+      headers: {
+        'User-Agent': userAgent,
+      }
     };
 
     request(httpOptions, function (error, response, body) {
