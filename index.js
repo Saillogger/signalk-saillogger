@@ -52,6 +52,7 @@ module.exports = function(app) {
   var lastSuccessfulUpdate;
   var position;
   var speedOverGround;
+  var maxSpeedOverGround;
   var courseOverGroundTrue;
   var windSpeedApparent = 0;
   var angleSpeedApparent;
@@ -371,11 +372,12 @@ module.exports = function(app) {
     }
 
     let values = [position.changedOn, position.latitude, position.longitude,
-                  speedOverGround, courseOverGroundTrue, windSpeedApparent,
+                  maxSpeedOverGround, courseOverGroundTrue, windSpeedApparent,
                   angleSpeedApparent];
 
     db.run('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?)', values, function(err) {
       windSpeedApparent = 0;
+      maxSpeedOverGround = 0;
     });
     position.changedOn = null;
   }
@@ -719,6 +721,7 @@ module.exports = function(app) {
       case 'navigation.speedOverGround':
         // Keep the previous 3 values
         speedOverGround = metersPerSecondToKnots(value);
+        maxSpeedOverGround = Math.max(maxSpeedOverGround, speedOverGround)
         previousSpeeds.unshift(speedOverGround);
         previousSpeeds = previousSpeeds.slice(0, 3);
         break;
