@@ -13,16 +13,16 @@
  * limitations under the License.
  */
 
-const POLL_INTERVAL = 5            // Poll every N seconds
-const SUBMIT_INTERVAL = 10         // Submit to API every N minutes
+const POLL_INTERVAL = 5               // Poll every N seconds
+const SUBMIT_INTERVAL = 5             // Submit to server every N minutes
 const MONITORING_SUBMIT_INTERVAL = 1  // Submit to API every N minutes
-const SEND_METADATA_INTERVAL = 1   // Submit to API every N hours
-const MIN_DISTANCE = 0.50          // Update database if moved X miles
-const DB_UPDATE_MINUTES = 15       // Update database every N minutes (worst case)
-const DB_UPDATE_MINUTES_MOVING = 5 // Update database every N minutes while moving
-const SPEED_THRESHOLD = 1          // Speed threshold for moving (knots)
-const MINIMUM_TURN_DEGREES = 25    // Update database if turned more than N degrees
-const CONFIGURATION_PORT = 1977	   // Port number for configuration
+const SEND_METADATA_INTERVAL = 10     // Submit to API every N minutes until successful
+const MIN_DISTANCE = 0.50             // Update database if moved X miles
+const DB_UPDATE_MINUTES = 15          // Update database every N minutes (worst case)
+const DB_UPDATE_MINUTES_MOVING = 5    // Update database every N minutes while moving
+const SPEED_THRESHOLD = 1             // Speed threshold for moving (knots)
+const MINIMUM_TURN_DEGREES = 45       // Update database if turned more than N degrees
+const CONFIGURATION_PORT = 1977	      // Port number for configuration
 const API_BASE = 'https://saillogger.com/api/v1/collector'
 
 const fs = require('fs')
@@ -32,6 +32,7 @@ const sqlite3 = require('sqlite3')
 const express = require('express')
 const bodyParser = require('body-parser')
 const cors = require('cors')
+const serialNumber = require('serial-number');
 const package = require('./package.json');
 const userAgent = `Saillogger plugin v${package.version}`;
 
@@ -59,17 +60,21 @@ module.exports = function(app) {
   var angleSpeedApparent;
   var previousSpeeds = [];
   var previousCOGs = [];
+  var deviceSerialNumber;
+  var aisTarget = {};
+  const selfMmsi = app.getSelfPath('mmsi');
 
   plugin.id = "signalk-saillogger";
-  plugin.name = "SignalK SailLogger";
-  plugin.description = "SailLogger plugin for Signal K";
+  plugin.name = "Saillogger";
+  plugin.description = "Saillogger plugin for Signal K";
 
   plugin.start = function(options) {
     configuration = options;
     startPlugin(options);
   }
 
-  plugin.stop =  function() {
+  plugin.stop = function() {
+    app.debug(`Stopping the plugin`);
     clearInterval(sendMetadataProcess);
     clearInterval(submitProcess);
     clearInterval(monitoringProcess);
@@ -83,7 +88,8 @@ module.exports = function(app) {
     type: 'object',
     required: ['uuid','depthKey','waterTemperatureKey','windSpeedKey',
                'windDirectionKey','pressureKey','insideTemperatureKey',
-               'outsideTemperatureKey','insideHumidityKey','outsideHumidityKey'],
+               'outsideTemperatureKey','insideHumidityKey','outsideHumidityKey',
+               'sendAisTargets'],
     properties: {
       uuid: {
         type: "string",
@@ -142,6 +148,11 @@ module.exports = function(app) {
       battery: {
         type: "string",
         title: "Main Battery key for monitoring (Optional)"
+      },
+      sendAisTargets: {
+        type: "boolean",
+        default: true,
+        title: "Send AIS targets as part of monitoring information"
       }
     }
   }
@@ -160,6 +171,7 @@ module.exports = function(app) {
     } else {
       app.debug(`Starting the plugin with collector ID ${options.uuid}`);
     }
+  
 
     uuid = options.uuid;
     gpsSource = options.source;
@@ -167,7 +179,10 @@ module.exports = function(app) {
 
     app.setPluginStatus('Saillogger started. Please wait for a status update.');
 
-    sendMetadata(options);
+    serialNumber(function (err, value) {
+      deviceSerialNumber = value;
+      sendMetadata(options);
+    });
 
     let dbFile= filePath.join(app.getDataDirPath(), 'saillogger.sqlite3');
     db = new sqlite3.Database(dbFile);
@@ -205,7 +220,7 @@ module.exports = function(app) {
 
     sendMetadataProcess = setInterval( function() {
       sendMetadata(options);
-    }, SEND_METADATA_INTERVAL * 60 * 60 * 1000);
+    }, SEND_METADATA_INTERVAL * 60 * 1000);
 
     submitProcess = setInterval( function() {
       submitDataToServer();
@@ -327,14 +342,13 @@ module.exports = function(app) {
   }
 
   function sendMetadata(options) {
-    if (metdataSubmitted == true) {
-      // We only need one successful metada submission per reboot
+     if (metdataSubmitted == true) {
       app.debug('Metada already submitted, not resubmitting');
       return;
     }
     let data = {
       name: app.getSelfPath('name'),
-      mmsi: app.getSelfPath('mmsi'),
+      mmsi: selfMmsi,
       length: app.getSelfPath('design.length.value.overall'),
       beam:  app.getSelfPath('design.beam.value'),
       height:  app.getSelfPath('design.airHeight.value'),
@@ -342,6 +356,7 @@ module.exports = function(app) {
       version: package.version,
       signalk_version: app.config.version,
       platform: findPlatform(),
+      serial_number: deviceSerialNumber,
       configuration: configuration
     }
 
@@ -354,17 +369,92 @@ module.exports = function(app) {
       }
     };
 
+    app.debug (`Metadata: ${JSON.stringify(data)}`);
     request(postData, function (error, response, body) {
       if (!error && response.statusCode == 200) {
         app.debug('Successfully sent metadata to the server');
         lastSuccessfulUpdate = Date.now();
-	sendMonitoringData(options);
-	submitDataToServer();
+        sendMonitoringData(options);
+        submitDataToServer();
         metdataSubmitted = true;
       } else {
         app.debug('Metadata submission to the server failed');
       }
     });
+  }
+
+  function refreshAisData() {
+    let vessels = app.getPath('vessels');
+    let detectedTargets = [];
+    for (let key in vessels) {
+      let vessel=vessels[key];
+      if ((!vessel.mmsi) || (vessel.mmsi == selfMmsi)) {
+        continue;
+      }
+      if (!("navigation" in vessel) || !("position" in vessel.navigation)) {
+        continue;
+      }
+      detectedTargets.push(vessel.mmsi);
+      let position = vessel.navigation.position.value;
+      let date = new Date(vessel.navigation.position.timestamp);
+      let timeStamp = Math.round(date.getTime()/1000);
+      let heading= vessel.navigation.courseOverGroundTrue?.value;
+      if (heading) {
+        heading = Math.round(heading *  57.295779513); // Convert to degrees
+      } else {
+        heading = vessel.navigation.headingTrue?.value;
+        if (heading) {
+          heading = Math.round(heading *  57.295779513); // Convert to degrees
+        } else {
+          heading = 0;
+        }
+      }
+
+      let speed=vessel.navigation.speedOverGround?.value;
+      if (speed) {
+        speed = speed*1.94384;
+        if (speed < 10) {
+          speed = Math.round(speed*10)/10;
+        } else {
+          speed = Math.round(speed);
+        }
+      } else {
+        speed = 0;
+      }
+
+      let shipType = vessel.design?.aisShipType?.value.name;
+      if (!shipType) {
+        shipType = 'Unknown';
+      }
+
+      let name;
+      if (!vessel.name) {
+        name = "Unknown";
+      } else {
+        name = vessel.name;
+      }
+
+      if (!(vessel.mmsi in aisTarget) || (aisTarget[vessel.mmsi].updated != timeStamp)) {
+        app.debug(`Updating AIS vessel ${vessel.mmsi} details`);
+        aisTarget[vessel.mmsi] = {
+          updated: timeStamp,
+          name: name,
+          position: position,
+          speed: speed,
+          heading: heading,
+          type: shipType
+        }
+      } else {
+        app.debug(`AIS vessel ${vessel.mmsi} details not changed`);
+      }
+      
+    }
+    // Remove vessels that moved out of range
+    for (let mmsi in aisTarget) {
+      if (!detectedTargets.includes(mmsi)) {
+        delete aisTarget[mmsi];
+      }
+    }
   }
 
   function updateDatabase() {
@@ -435,6 +525,9 @@ module.exports = function(app) {
     We keep Monitoring as an independent process. This doesn't have a cache.
   */
   function sendMonitoringData(options) {
+    if ((options.sendAisTargets === undefined) || (options.sendAisTargets === true)) {
+      refreshAisData();
+    }
     // Below section is necessary for upgrades
     if (!options.depthKey) {
       options.depthKey = "environment.depth.belowTransducer";
@@ -507,7 +600,8 @@ module.exports = function(app) {
       anchor: {
         position: getKeyValue('navigation.anchor.position', 60),
         radius: getKeyValue('navigation.anchor.maxRadius', 60)
-      }
+      },
+      aisTargets: aisTarget
     }
 
     let httpOptions = {
@@ -519,6 +613,7 @@ module.exports = function(app) {
       }
     };
 
+    app.debug(`Sending monitoring data: ${JSON.stringify(data)}`);
     request(httpOptions, function (error, response, body) {
       if (!error && response.statusCode == 200) {
         app.debug('Monitoring data successfully submitted');
@@ -738,8 +833,8 @@ module.exports = function(app) {
       case 'navigation.courseOverGroundTrue':
         // Keep the previous 3 values
         courseOverGroundTrue = radiantToDegrees(value);
-	previousCOGs.unshift(courseOverGroundTrue);
-	previousCOGs = previousCOGs.slice(0, 6);
+        previousCOGs.unshift(courseOverGroundTrue);
+        previousCOGs = previousCOGs.slice(0, 6);
         break;
       case 'environment.wind.speedApparent':
         windSpeedApparent = Math.max(windSpeedApparent, metersPerSecondToKnots(value));
