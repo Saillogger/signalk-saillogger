@@ -1,6 +1,8 @@
 # Saillogger
 
-Saillogger is a feature-rich, fully automated, and maintenance-free marine logbook and monitoring solution built by boaters for boaters. 
+Saillogger is a feature-rich, fully automated, and maintenance-free marine logbook and monitoring solution built by boaters for boaters. Starting with plugin version 3.0.0, Saillogger also allows remote monitoring of all NMEA data.
+
+See [announcements](https://community.saillogger.com/category/5/announcements-and-new-features) for release history.
 
 ## Get Started
 Create an account on [Saillogger.com](https://saillogger.com/) and follow the step-by-step instructions.

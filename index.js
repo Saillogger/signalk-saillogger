@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 Ilker Temir <ilker@ilkertemir.com>
+ * Copyright 2019-2024 Ilker Temir <ilker@ilkertemir.com>
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 const POLL_INTERVAL = 5               // Poll every N seconds
 const SUBMIT_INTERVAL = 5             // Submit to server every N minutes
 const MONITORING_SUBMIT_INTERVAL = 1  // Submit to API every N minutes
-const SEND_METADATA_INTERVAL = 10     // Submit to API every N minutes until successful
+const SEND_METADATA_INTERVAL = 1      // Submit to API every N hours
 const MIN_DISTANCE = 0.50             // Update database if moved X miles
 const DB_UPDATE_MINUTES = 15          // Update database every N minutes (worst case)
 const DB_UPDATE_MINUTES_MOVING = 5    // Update database every N minutes while moving
@@ -47,9 +47,8 @@ module.exports = function(app) {
   var db;
   var uuid;
   var gpsSource;
-  var batteryKey;
   var configuration;
-
+  var monitoringConfiguration;
   var updateLastCalled = Date.now();
   var lastSuccessfulUpdate;
   var position;
@@ -86,10 +85,7 @@ module.exports = function(app) {
 
   plugin.schema = {
     type: 'object',
-    required: ['uuid','depthKey','waterTemperatureKey','windSpeedKey',
-               'windDirectionKey','pressureKey','insideTemperatureKey',
-               'outsideTemperatureKey','insideHumidityKey','outsideHumidityKey',
-               'sendAisTargets'],
+    required: ['uuid'],
     properties: {
       uuid: {
         type: "string",
@@ -97,62 +93,7 @@ module.exports = function(app) {
       },
       source: {
         type: "string",
-        title: "GPS source (Only if you have multiple GPS sources and you want " +
-               "to use an explicit source, important to leave empty if unsure)"
-      },
-      depthKey: {
-        type: "string",
-        default: "environment.depth.belowTransducer",
-        title: "Monitoring data source for depth"
-      },
-      waterTemperatureKey: {
-        type: "string",
-        default: "environment.water.temperature",
-        title: "Monitoring data source for water temperature"
-      },
-      windSpeedKey: {
-        type: "string",
-        default: "environment.wind.speedApparent",
-        title: "Monitoring data source for wind speed"
-      },
-      windDirectionKey: {
-        type: "string",
-        default: "environment.wind.directionTrue",
-        title: "Monitoring data source for wind direction"
-      },
-      pressureKey: {
-        type: "string",
-        default: "environment.outside.pressure",
-        title: "Monitoring data source for atmospheric pressure"
-      },
-      insideTemperatureKey: {
-        type: "string",
-        default: "environment.inside.temperature",
-        title: "Monitoring data source for inside temperature"
-      },
-      outsideTemperatureKey: {
-        type: "string",
-        default: "environment.outside.temperature",
-        title: "Monitoring data source for outside temperature"
-      },
-      insideHumidityKey: {
-        type: "string",
-        default: "environment.inside.humidity",
-        title: "Monitoring data source for inside humidity"
-      },
-      outsideHumidityKey: {
-        type: "string",
-        default: "environment.outside.humidity",
-        title: "Monitoring data source for outside humidity"
-      },
-      battery: {
-        type: "string",
-        title: "Main Battery key for monitoring (Optional)"
-      },
-      sendAisTargets: {
-        type: "boolean",
-        default: true,
-        title: "Send AIS targets as part of monitoring information"
+        title: "GPS source (leave empty if unsure; details at https://saillogger.com/support/)"
       }
     }
   }
@@ -175,7 +116,6 @@ module.exports = function(app) {
 
     uuid = options.uuid;
     gpsSource = options.source;
-    batteryKey = options.battery;
 
     app.setPluginStatus('Saillogger started. Please wait for a status update.');
 
@@ -218,16 +158,27 @@ module.exports = function(app) {
       app.error('Subscription error');
     }, data => processDelta(data));
 
+    // Send a metadata refresh 15 seconds after start and then every hour
+    setTimeout( function() {
+      // This is timed to make sure we have captured available data keys
+      sendMetadata(options);
+    }, 15 * 1000);
+
     sendMetadataProcess = setInterval( function() {
       sendMetadata(options);
-    }, SEND_METADATA_INTERVAL * 60 * 1000);
+    }, SEND_METADATA_INTERVAL * 60 * 60 * 1000);
 
     submitProcess = setInterval( function() {
       submitDataToServer();
     }, SUBMIT_INTERVAL * 60 * 1000);
 
     monitoringProcess = setInterval( function() {
-      sendMonitoringData(options);
+      if (monitoringConfiguration) {
+        sendMonitoringData(monitoringConfiguration);
+      } else {
+        app.debug('Monitoring configuration not set');
+        getMonitoringConfiguration();
+      }
     }, MONITORING_SUBMIT_INTERVAL * 60 * 1000);
 
     statusProcess = setInterval( function() {
@@ -283,8 +234,8 @@ module.exports = function(app) {
         app.debug(`Received a configuration request but collector id already set, ignoring`);
         return res.json({
           success: false,
-	  reason: 'CollectorID already set',
-	  model: model
+	        reason: 'CollectorID already set',
+	        model: model
         });
       }
       let collectorId = req.body.collectorId;
@@ -303,8 +254,8 @@ module.exports = function(app) {
           startPlugin(configuration);
           res.json({
             success: true,
-	    reason: null,
-	    model: model
+            reason: null,
+            model: model
           });
         });
       }
@@ -341,11 +292,53 @@ module.exports = function(app) {
     return platform;
   }
 
+  function getMonitoringConfiguration() {
+    app.debug('Retrieving monitoring configuration');
+    let options = {
+      uri: API_BASE + '/monitoring/' + uuid + '/configuration',
+      method: 'GET',
+      headers: {
+        'User-Agent': userAgent,
+      }
+    };
+    request.get(options, function (error, response, body) {
+      if (!error && response.statusCode == 200) {
+        monitoringConfiguration = JSON.parse(body);
+        app.debug(`Monitoring configuration: ${JSON.stringify(monitoringConfiguration)}`);
+        sendMonitoringData(monitoringConfiguration);
+      } else {
+        app.debug('Failed to get monitoring configuration');
+      }
+    });
+  }
+
   function sendMetadata(options) {
-     if (metdataSubmitted == true) {
-      app.debug('Metada already submitted, not resubmitting');
-      return;
+    function getAllKeys(obj, parentKey = '', result = []) {
+      for (let key in obj) {
+        if (obj.hasOwnProperty(key)) {
+          const newKey = parentKey ? `${parentKey}.${key}` : key;
+          if (obj[key] !== null && typeof obj[key] === 'object') {
+            if (obj[key]['$source']) {
+              if (obj[key].value !== null && typeof(obj[key].value)=== 'number') {
+                result.push(newKey);
+              }
+            } else {
+              getAllKeys(obj[key], newKey, result);
+            }
+          }
+        }
+      }
+      return result;
     }
+
+    if (metdataSubmitted == true) {
+      app.debug('Metada already submitted, refreshing');
+    }
+
+    let self = app.getPath('self');
+    let dataModel = app.getPath(self);
+    let availableKeys=getAllKeys(dataModel);
+
     let data = {
       name: app.getSelfPath('name'),
       mmsi: selfMmsi,
@@ -357,7 +350,8 @@ module.exports = function(app) {
       signalk_version: app.config.version,
       platform: findPlatform(),
       serial_number: deviceSerialNumber,
-      configuration: configuration
+      configuration: configuration,
+      available_keys: availableKeys
     }
 
     let postData = {
@@ -374,7 +368,7 @@ module.exports = function(app) {
       if (!error && response.statusCode == 200) {
         app.debug('Successfully sent metadata to the server');
         lastSuccessfulUpdate = Date.now();
-        sendMonitoringData(options);
+        getMonitoringConfiguration();
         submitDataToServer();
         metdataSubmitted = true;
       } else {
@@ -384,6 +378,25 @@ module.exports = function(app) {
   }
 
   function refreshAisData() {
+    function getVesselDetails(vessel) {
+      return {
+        beam: vessel.design?.beam?.value,
+        length: vessel.design?.length?.value,
+        shipType: vessel.design?.aisShipType?.value.id,
+        ais: {
+          class: vessel.sensors?.ais?.class?.value,
+          fromBow: vessel.sensors?.ais?.fromBow?.value,
+          fromCenter: vessel.sensors?.ais?.fromCenter?.value,
+        },
+        navigation: {
+          state: vessel.navigation?.specialManeuver?.value,
+          rateOfTurn: vessel.navigation?.rateOfTurn?.value,
+          specialManeuver: vessel.navigation?.specialManeuver?.value,
+          destination: vessel.navigation?.destination?.commonName?.value,
+        },
+        registrations: vessel.registrations?.value
+      }
+    }
     let vessels = app.getPath('vessels');
     let detectedTargets = [];
     for (let key in vessels) {
@@ -434,16 +447,33 @@ module.exports = function(app) {
         name = vessel.name;
       }
 
-      if (!(vessel.mmsi in aisTarget) || (aisTarget[vessel.mmsi].updated != timeStamp)) {
-        app.debug(`Updating AIS vessel ${vessel.mmsi} details`);
+      if (!(vessel.mmsi in aisTarget)) {
+        app.debug(`Inserting AIS vessel ${vessel.mmsi} details`);
         aisTarget[vessel.mmsi] = {
+          counter: 0,
           updated: timeStamp,
           name: name,
           position: position,
           speed: speed,
           heading: heading,
-          type: shipType
+          type: shipType,
+          vessel: getVesselDetails(vessel)
         }
+      } else if (aisTarget[vessel.mmsi].updated != timeStamp) {
+        app.debug(`Updating AIS vessel ${vessel.mmsi} details`);
+        aisTarget[vessel.mmsi].updated = timeStamp;
+        aisTarget[vessel.mmsi].name = name;
+        aisTarget[vessel.mmsi].position = position;
+        aisTarget[vessel.mmsi].speed = speed;
+        aisTarget[vessel.mmsi].heading = heading;
+        aisTarget[vessel.mmsi].type = shipType;
+        if (aisTarget[vessel.mmsi].counter++ == 30) {
+          app.debug(`Sending full vessel details for ${vessel.mmsi}`);
+          aisTarget[vessel.mmsi].counter = 0;
+          aisTarget[vessel.mmsi].vessel = getVesselDetails(vessel);
+        } else {
+          delete aisTarget[vessel.mmsi].vessel;
+        }  
       } else {
         app.debug(`AIS vessel ${vessel.mmsi} details not changed`);
       }
@@ -525,39 +555,13 @@ module.exports = function(app) {
     We keep Monitoring as an independent process. This doesn't have a cache.
   */
   function sendMonitoringData(options) {
-    if ((options.sendAisTargets === undefined) || (options.sendAisTargets === true)) {
+    if (options.sendAisTargets === true) {
       refreshAisData();
-    }
-    // Below section is necessary for upgrades
-    if (!options.depthKey) {
-      options.depthKey = "environment.depth.belowTransducer";
-    }
-    if (!options.waterTemperatureKey) {
-      options.waterTemperatureKey = "environment.water.temperature";
-    }
-    if (!options.windSpeedKey) {
-      options.windSpeedKey = "environment.wind.speedApparent";
-    }
-    if (!options.windDirectionKey) {
-      options.windDirectionKey = "environment.wind.angleApparent";
-    }
-    if (!options.pressureKey) {
-      options.pressureKey = "environment.outside.pressure";
-    }
-    if (!options.insideTemperatureKey) {
-      options.insideTemperatureKey = "environment.inside.temperature";
-    }
-    if (!options.outsideTemperatureKey) {
-      options.outsideTemperatureKey = "environment.outside.temperature";
-    }
-    if (!options.insideHumidityKey) {
-      options.insideHumidityKey = "environment.inside.humidity";
-    }
-    if (!options.outsideHumidityKey) {
-      options.outsideHumidityKey = "environment.outside.humidity";
+    } else {
+      aisTarget = {};
     }
 
-    let position = getKeyValue('navigation.position', 120);
+    let position = getKeyValue('navigation.position', 6*60*60);
     if (position == null) {
       // This is odd, let's debug
       let data = app.getSelfPath('navigation.position');
@@ -594,14 +598,18 @@ module.exports = function(app) {
         outside: floatToPercentage(getKeyValue(options.outsideHumidityKey, 90))
       },
       battery: {
-        voltage: getKeyValue(`electrical.batteries.${batteryKey}.voltage`, 60),
-        charge: floatToPercentage(getKeyValue(`electrical.batteries.${batteryKey}.capacity.stateOfCharge`, 60))
-      },
-      anchor: {
-        position: getKeyValue('navigation.anchor.position', 60),
-        radius: getKeyValue('navigation.anchor.maxRadius', 60)
+        voltage: getKeyValue(options.batteryVoltageKey, 60),
+        charge: floatToPercentage(getKeyValue(options.batteryChargeKey, 60))
       },
       aisTargets: aisTarget
+    }
+
+    for (let i=0;i < options.additionalDataKeys.length;i++) {
+      let key = options.additionalDataKeys[i];
+      let value = getKeyValue(key, 60);
+      if (value) {
+        data[key] = value;
+      }
     }
 
     let httpOptions = {
@@ -614,9 +622,13 @@ module.exports = function(app) {
     };
 
     app.debug(`Sending monitoring data: ${JSON.stringify(data)}`);
-    request(httpOptions, function (error, response, body) {
+    request(httpOptions, function (error, response, responseData) {
       if (!error && response.statusCode == 200) {
-        app.debug('Monitoring data successfully submitted');
+        app.debug(`Monitoring data successfully submitted (Server configuration: v${responseData.configuration_version})`);
+        if (responseData.configuration_version > options.version){
+          app.debug(`New monitoring configuration available (v${responseData.configuration_version})`);
+          getMonitoringConfiguration();
+        }
       } else {
         app.debug('Submission of monitoring data failed');
       }
@@ -750,20 +762,20 @@ module.exports = function(app) {
         let source = data.updates[0]['$source'];
         if ((gpsSource) && (source != gpsSource)) {
           app.debug(`Skipping position from GPS resource ${source}`);
-	  break;
-	}
+	        break;
+	      }
         if (position) {
           let distance = calculateDistance(position.latitude,
                                            position.longitude,
                                            value.latitude,
                                            value.longitude);
-	  let timeBetweenPositions = Date.now() - position.changedOn;
-	  if ((timeBetweenPositions <= 2 * 60 * 1000) && (distance >= 5)) {
-            app.error(`Erroneous position reading. ` +
-	              `Moved ${distance} miles in ${timeBetweenPositions/1000} seconds. ` +
-                      `Ignoring the position: ${position.latitude}, ${position.longitude}`);
-	    return;
-	  }
+          let timeBetweenPositions = Date.now() - position.changedOn;
+          if ((timeBetweenPositions <= 2 * 60 * 1000) && (distance >= 5)) {
+                  app.error(`Erroneous position reading. ` +
+                      `Moved ${distance} miles in ${timeBetweenPositions/1000} seconds. ` +
+                            `Ignoring the position: ${position.latitude}, ${position.longitude}`);
+            return;
+          }
 
           position.changedOn = Date.now();
      
@@ -772,7 +784,7 @@ module.exports = function(app) {
             // updateDatabase() is split to multiple if conditions for better debug messages
 
             // Want submissions every DB_UPDATE_MINUTES at the very least
-	    if (timePassed >= DB_UPDATE_MINUTES * 60 * 1000) {
+	          if (timePassed >= DB_UPDATE_MINUTES * 60 * 1000) {
               app.debug(`Updating database, ${DB_UPDATE_MINUTES} min passed since last update`);
               position = value;
               position.changedOn = Date.now();
