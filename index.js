@@ -158,11 +158,11 @@ module.exports = function(app) {
       app.error('Subscription error');
     }, data => processDelta(data));
 
-    // Send a metadata refresh 15 seconds after start and then every hour
+    // Send a metadata refresh a minute after start and then every hour
     setTimeout( function() {
       // This is timed to make sure we have captured available data keys
       sendMetadata(options);
-    }, 15 * 1000);
+    }, 60 * 1000);
 
     sendMetadataProcess = setInterval( function() {
       sendMetadata(options);
@@ -320,7 +320,10 @@ module.exports = function(app) {
           if (obj[key] !== null && typeof obj[key] === 'object') {
             if (obj[key]['$source']) {
               if (obj[key].value !== null && typeof(obj[key].value)=== 'number') {
-                result.push(newKey);
+                result.push({
+                  key: newKey,
+                  unit: obj[key]?.meta?.units ?? null
+                });
               }
             } else {
               getAllKeys(obj[key], newKey, result);
