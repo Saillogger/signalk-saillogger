@@ -583,6 +583,10 @@ module.exports = function(app) {
       sog: metersPerSecondToKnots(getKeyValue('navigation.speedOverGround', 60)),
       cog: radiantToDegrees(getKeyValue('navigation.courseOverGroundTrue', 60)),
       heading: radiantToDegrees(getKeyValue('navigation.headingTrue', 60)),
+      anchor: {
+        position: getKeyValue('navigation.anchor.position', 60),
+        radius: getKeyValue('navigation.anchor.maxRadius', 60)
+      },
       water: {
         depth: getKeyValue(options.depthKey, 10),
         temperature: kelvinToCelsius(getKeyValue(options.waterTemperatureKey, 90))
