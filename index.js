@@ -32,7 +32,7 @@ const sqlite3 = require('sqlite3')
 const express = require('express')
 const bodyParser = require('body-parser')
 const cors = require('cors')
-const serialNumber = require('serial-number');
+const { machineId, machineIdSync } = require('node-machine-id');
 const package = require('./package.json');
 const userAgent = `Saillogger plugin v${package.version}`;
 
@@ -116,13 +116,10 @@ module.exports = function(app) {
 
     uuid = options.uuid;
     gpsSource = options.source;
+    deviceSerialNumber = machineIdSync();
 
     app.setPluginStatus('Saillogger started. Please wait for a status update.');
-
-    serialNumber(function (err, value) {
-      deviceSerialNumber = value;
-      sendMetadata(options);
-    });
+    sendMetadata(options);
 
     let dbFile= filePath.join(app.getDataDirPath(), 'saillogger.sqlite3');
     db = new sqlite3.Database(dbFile);
