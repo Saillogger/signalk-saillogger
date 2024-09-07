@@ -1,5 +1,6 @@
 /*
- * Copyright 2019-2024 Ilker Temir <ilker@ilkertemir.com>
+ * Copyright 2019-2023 Ilker Temir <ilker@ilkertemir.com>
+ * Copyright 2023-2024 Saillogger LLC <info@saillogger.com>
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,14 +15,9 @@
  */
 
 const POLL_INTERVAL = 5               // Poll every N seconds
-const SUBMIT_INTERVAL = 5             // Submit to server every N minutes
-const MONITORING_SUBMIT_INTERVAL = 1  // Submit to API every N minutes
+const SUBMIT_INTERVAL = 1             // Submit to server every N minutes
+const AIS_SUBMISSION_INTERVAL = 5     // Submit AIS data every N minutes
 const SEND_METADATA_INTERVAL = 1      // Submit to API every N hours
-const MIN_DISTANCE = 0.50             // Update database if moved X miles
-const DB_UPDATE_MINUTES = 15          // Update database every N minutes (worst case)
-const DB_UPDATE_MINUTES_MOVING = 5    // Update database every N minutes while moving
-const SPEED_THRESHOLD = 1             // Speed threshold for moving (knots)
-const MINIMUM_TURN_DEGREES = 45       // Update database if turned more than N degrees
 const CONFIGURATION_PORT = 1977	      // Port number for configuration
 const API_BASE = 'https://saillogger.com/api/v1/collector'
 
@@ -40,10 +36,9 @@ module.exports = function(app) {
   var plugin = {};
   var unsubscribes = [];
   var submitProcess;
-  var monitoringProcess;
+  var aisSubmissionProcess;
   var sendMetadataProcess;
   var metdataSubmitted = false;
-  var statusProcess;
   var db;
   var uuid;
   var gpsSource;
@@ -76,8 +71,7 @@ module.exports = function(app) {
     app.debug(`Stopping the plugin`);
     clearInterval(sendMetadataProcess);
     clearInterval(submitProcess);
-    clearInterval(monitoringProcess);
-    clearInterval(statusProcess);
+    clearInterval(aisSubmissionProcess);
     if (db) {
       db.close();
     }
@@ -119,9 +113,8 @@ module.exports = function(app) {
     deviceSerialNumber = machineIdSync();
 
     app.setPluginStatus('Saillogger started. Please wait for a status update.');
-    sendMetadata(options);
 
-    let dbFile= filePath.join(app.getDataDirPath(), 'saillogger.sqlite3');
+    let dbFile= filePath.join(app.getDataDirPath(), 'saillogger_v2.sqlite3');
     db = new sqlite3.Database(dbFile);
     db.run('CREATE TABLE IF NOT EXISTS buffer(ts REAL,' +
            '                                 latitude REAL,' +
@@ -129,8 +122,14 @@ module.exports = function(app) {
            '                                 speedOverGround REAL,' +
            '                                 courseOverGroundTrue REAL,' +
            '                                 windSpeedApparent REAL,' +
-           '                                 angleSpeedApparent REAL)');
+           '                                 angleSpeedApparent REAL,' +
+           '                                 additionalData TEXT)');
+    db.run('CREATE TABLE IF NOT EXISTS configuration(id INTEGER PRIMARY KEY,' +
+           '                                         config TEXT)');
     
+    getConfiguration();
+    sendMetadata();
+
     let subscription = {
       context: 'vessels.self',
       subscribe: [{
@@ -155,46 +154,49 @@ module.exports = function(app) {
       app.error('Subscription error');
     }, data => processDelta(data));
 
-    // Send a metadata refresh a minute after start and then every hour
+    submitDataToServer();
+    updatePluginStatus();
+    // Send metadata and AIS targets after a warm-up period
     setTimeout( function() {
-      // This is timed to make sure we have captured available data keys
-      sendMetadata(options);
+      sendMetadata();
+      sendAisTargets();
     }, 60 * 1000);
 
     sendMetadataProcess = setInterval( function() {
-      sendMetadata(options);
+      sendMetadata();
     }, SEND_METADATA_INTERVAL * 60 * 60 * 1000);
 
     submitProcess = setInterval( function() {
       submitDataToServer();
+      updatePluginStatus();
     }, SUBMIT_INTERVAL * 60 * 1000);
 
-    monitoringProcess = setInterval( function() {
-      if (monitoringConfiguration) {
-        sendMonitoringData(monitoringConfiguration);
-      } else {
-        app.debug('Monitoring configuration not set');
-        getMonitoringConfiguration();
-      }
-    }, MONITORING_SUBMIT_INTERVAL * 60 * 1000);
+    aisSubmissionProcess = setInterval( function() {
+      sendAisTargets();
+    }, AIS_SUBMISSION_INTERVAL * 60 * 1000);
 
-    statusProcess = setInterval( function() {
-      db.all('SELECT * FROM buffer ORDER BY ts', function(err, data) {
-        let message;
-        if (data.length == 1) {
-          message = `${data.length} entry in the queue,`;
+  }
+
+  function updatePluginStatus() {
+    db.get('SELECT COUNT(*) AS count FROM buffer', function(err, row) {
+        if (err) {
+            app.debug('Error querying buffer count:', err);
         } else {
-          message = `${data.length} entries in the queue,`;
+            let message;
+            if (row.count == 1) {
+                message = `${row.count} entry in the queue,`;
+            } else {
+                message = `${row.count} entries in the queue,`;
+            }
+            if (lastSuccessfulUpdate) {
+                let since = timeSince(lastSuccessfulUpdate);
+                message += ` last connection to the server was ${since} ago.`;
+            } else {
+                message += ` no successful connection to the server since restart.`;
+            }
+            app.setPluginStatus(message);
         }
-        if (lastSuccessfulUpdate) {
-          let since = timeSince(lastSuccessfulUpdate);
-          message += ` last connection to the server was ${since} ago.`;
-        } else {
-          message += ` no successful connection to the server since restart.`;
-        }
-        app.setPluginStatus(message);
-      })
-    }, 31*1000);
+    });
   }
 
   function isVenusOS() {
@@ -289,7 +291,33 @@ module.exports = function(app) {
     return platform;
   }
 
-  function getMonitoringConfiguration() {
+  function saveConfiguration() {
+    config = JSON.stringify(monitoringConfiguration);
+    db.run('INSERT OR REPLACE INTO configuration(id, config) VALUES(1, ?)', [config], function(err) {
+      if (err) {
+        app.debug(`Failed to store configuration locally ${err}`);
+      } else {
+        app.debug('Configuration stored locally');
+      }
+    });
+  }
+
+  function loadConfiguration() {
+    db.get('SELECT * FROM configuration WHERE id=1', function(err, row) {
+      if (err) {
+        app.debug('Failed to load configuration');
+      } else {
+        if (row) {
+          app.debug('Configuration loaded from local storage');
+          monitoringConfiguration = JSON.parse(row.config);
+        } else {
+          app.debug('No locally stored configuration found');
+        }
+      }
+    });
+  }
+
+  function getConfiguration() {
     app.debug('Retrieving monitoring configuration');
     let options = {
       uri: API_BASE + '/monitoring/' + uuid + '/configuration',
@@ -302,14 +330,15 @@ module.exports = function(app) {
       if (!error && response.statusCode == 200) {
         monitoringConfiguration = JSON.parse(body);
         app.debug(`Monitoring configuration: ${JSON.stringify(monitoringConfiguration)}`);
-        sendMonitoringData(monitoringConfiguration);
+        saveConfiguration();
       } else {
-        app.debug('Failed to get monitoring configuration');
+        app.debug('Failed to get monitoring configuration, trying to load from local storage');
+        loadConfiguration();
       }
     });
   }
 
-  function sendMetadata(options) {
+  function sendMetadata() {
     function getAllKeys(obj, parentKey = '', result = []) {
       for (let key in obj) {
         if (obj.hasOwnProperty(key)) {
@@ -329,10 +358,6 @@ module.exports = function(app) {
         }
       }
       return result;
-    }
-
-    if (metdataSubmitted == true) {
-      app.debug('Metada already submitted, refreshing');
     }
 
     let self = app.getPath('self');
@@ -366,13 +391,11 @@ module.exports = function(app) {
     app.debug (`Metadata: ${JSON.stringify(data)}`);
     request(postData, function (error, response, body) {
       if (!error && response.statusCode == 200) {
-        app.debug('Successfully sent metadata to the server');
+        app.debug('Successfully submitted metadata');
         lastSuccessfulUpdate = Date.now();
-        getMonitoringConfiguration();
-        submitDataToServer();
         metdataSubmitted = true;
       } else {
-        app.debug('Metadata submission to the server failed');
+        app.debug('Metadata submission failed');
       }
     });
   }
@@ -495,11 +518,19 @@ module.exports = function(app) {
       return
     }
 
+    let monitoringDataInJson = null;
+    if (monitoringConfiguration) {
+      let monitoringData = getMonitoringData(monitoringConfiguration);
+      monitoringDataInJson = JSON.stringify(monitoringData);
+    } else {
+      getConfiguration();
+      monitoringDataInJson = null;
+    }
     let values = [position.changedOn, position.latitude, position.longitude,
                   maxSpeedOverGround, courseOverGroundTrue, windSpeedApparent,
-                  angleSpeedApparent];
+                  angleSpeedApparent, monitoringDataInJson];
 
-    db.run('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?)', values, function(err) {
+    db.run('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?, ?)', values, function(err) {
       windSpeedApparent = 0;
       maxSpeedOverGround = 0;
     });
@@ -507,7 +538,7 @@ module.exports = function(app) {
   }
 
   function submitDataToServer() {
-    db.all('SELECT * FROM buffer ORDER BY ts LIMIT 250', function(err, data) {
+    db.all('SELECT * FROM buffer ORDER BY ts LIMIT 60', function(err, data) {
       if (data.length == 0) {
         app.debug('Local cache is empty, sending an empty ping');
       }
@@ -524,9 +555,26 @@ module.exports = function(app) {
       request(httpOptions, function (error, response, body) {
         if (!error && response.statusCode == 200) {
           let lastTs = body.processedUntil;
-          db.run('DELETE FROM buffer where ts <= ' + lastTs);
-          lastSuccessfulUpdate = Date.now();
-          app.debug(`Successfully sent ${data.length} record(s) to the server`);
+          app.debug(`Successfully submitted ${data.length} data record(s)`);
+          if (body.refreshMetadata) {
+            app.debug('Server requested metadata refresh');
+            sendMetadata();
+          }
+          if (monitoringConfiguration && (body.configurationVersion > monitoringConfiguration.version)) {
+            app.debug(`New monitoring configuration available (v${body.configurationVersion})`);
+            getConfiguration();
+          }
+          db.run('DELETE FROM buffer where ts <= ' + lastTs, function(err) {
+            lastSuccessfulUpdate = Date.now();
+            db.get('SELECT COUNT(*) AS count FROM buffer', function(err, row) {
+                if (err) {
+                    app.debug('Error querying buffer count:', err);
+                } else if (row.count > 1) {
+                    app.debug(`Cache not fully flushed, ${row.count} record(s) left. Continuing...`);
+                    submitDataToServer();
+                }
+            });
+          });
         } else if (!error && response.statusCode == 204) {
           app.debug('Server responded with HTTP-204');
         } else {
@@ -551,73 +599,22 @@ module.exports = function(app) {
     }
   }
 
-  /*
-    We keep Monitoring as an independent process. This doesn't have a cache.
-  */
-  function sendMonitoringData(options) {
-    if (options.sendAisTargets === true) {
-      refreshAisData();
-    } else {
-      aisTarget = {};
+  function sendAisTargets() {
+    if (!monitoringConfiguration) {
+      app.debug('Monitoring configuration not available yet');
+      return
     }
-
-    let position = getKeyValue('navigation.position', 6*60*60);
-    if (position == null) {
-      // This is odd, let's debug
-      let data = app.getSelfPath('navigation.position');
-      if (!data) {
-        app.debug('No navigation.position for self.');
-        return;
-      }
-      let now = new Date();
-      let dataTs = new Date(data.timestamp);
-      app.debug(`No position data, not sending monitoring information (${now}, ${dataTs})`);
-      return;
+    if (!monitoringConfiguration.sendAisTargets) {
+      app.debug('AIS target submission is disabled');
+      return
     }
-
+    refreshAisData();
     let data = {
-      position: position,
-      sog: metersPerSecondToKnots(getKeyValue('navigation.speedOverGround', 60)),
-      cog: radiantToDegrees(getKeyValue('navigation.courseOverGroundTrue', 60)),
-      heading: radiantToDegrees(getKeyValue('navigation.headingTrue', 60)),
-      anchor: {
-        position: getKeyValue('navigation.anchor.position', 60),
-        radius: getKeyValue('navigation.anchor.maxRadius', 60)
-      },
-      water: {
-        depth: getKeyValue(options.depthKey, 10),
-        temperature: kelvinToCelsius(getKeyValue(options.waterTemperatureKey, 90))
-      },
-      wind: {
-        speed: metersPerSecondToKnots(getKeyValue(options.windSpeedKey, 90)),
-        direction: radiantToDegrees(getKeyValue(options.windDirectionKey, 90))
-      },
-      pressure: pascalToHectoPascal(getKeyValue(options.pressureKey, 90)),
-      temperature: {
-        inside: kelvinToCelsius(getKeyValue(options.insideTemperatureKey, 90)),
-        outside: kelvinToCelsius(getKeyValue(options.outsideTemperatureKey, 90))
-      },
-      humidity: {
-        inside: floatToPercentage(getKeyValue(options.insideHumidityKey, 90)),
-        outside: floatToPercentage(getKeyValue(options.outsideHumidityKey, 90))
-      },
-      battery: {
-        voltage: getKeyValue(options.batteryVoltageKey, 60),
-        charge: floatToPercentage(getKeyValue(options.batteryChargeKey, 60))
-      },
-      aisTargets: aisTarget
-    }
-
-    for (let i=0;i < options.additionalDataKeys.length;i++) {
-      let key = options.additionalDataKeys[i];
-      let value = getKeyValue(key, 60);
-      if (value) {
-        data[key] = value;
-      }
+      aisTargets: aisTarget,
     }
 
     let httpOptions = {
-      uri: API_BASE + '/monitoring/' + uuid + '/push',
+      uri: API_BASE + '/ais/' + uuid + '/push',
       method: 'POST',
       json: JSON.stringify(data),
       headers: {
@@ -625,19 +622,58 @@ module.exports = function(app) {
       }
     };
 
-    app.debug(`Sending monitoring data: ${JSON.stringify(data)}`);
+    app.debug(`Sending AIS data for ${Object.keys(data).length} vessels`);
     request(httpOptions, function (error, response, responseData) {
       if (!error && response.statusCode == 200) {
-        app.debug(`Monitoring data successfully submitted (Server configuration: v${responseData.configuration_version})`);
-        if (responseData.configuration_version > options.version){
-          app.debug(`New monitoring configuration available (v${responseData.configuration_version})`);
-          getMonitoringConfiguration();
-        }
+        app.debug(`AIS data successfully submitted`);
       } else {
-        app.debug('Submission of monitoring data failed');
+        app.debug('Submission of AIS data failed');
       }
     });
   }
+
+  function getMonitoringData(configuration) {
+      let data = {
+        sog: metersPerSecondToKnots(getKeyValue('navigation.speedOverGround', 60)),
+        cog: radiantToDegrees(getKeyValue('navigation.courseOverGroundTrue', 60)),
+        heading: radiantToDegrees(getKeyValue('navigation.headingTrue', 60)),
+        anchor: {
+          position: getKeyValue('navigation.anchor.position', 60),
+          radius: getKeyValue('navigation.anchor.maxRadius', 60)
+        },
+        water: {
+          depth: getKeyValue(configuration.depthKey, 10),
+          temperature: kelvinToCelsius(getKeyValue(configuration.waterTemperatureKey, 90))
+        },
+        wind: {
+          speed: metersPerSecondToKnots(getKeyValue(configuration.windSpeedKey, 90)),
+          direction: radiantToDegrees(getKeyValue(configuration.windDirectionKey, 90))
+        },
+        pressure: pascalToHectoPascal(getKeyValue(configuration.pressureKey, 90)),
+        temperature: {
+          inside: kelvinToCelsius(getKeyValue(configuration.insideTemperatureKey, 90)),
+          outside: kelvinToCelsius(getKeyValue(configuration.outsideTemperatureKey, 90))
+        },
+        humidity: {
+          inside: floatToPercentage(getKeyValue(configuration.insideHumidityKey, 90)),
+          outside: floatToPercentage(getKeyValue(configuration.outsideHumidityKey, 90))
+        },
+        battery: {
+          voltage: getKeyValue(configuration.batteryVoltageKey, 60),
+          charge: floatToPercentage(getKeyValue(configuration.batteryChargeKey, 60))
+        }
+      };
+  
+      for (let i = 0; i < configuration.additionalDataKeys.length; i++) {
+        let key = configuration.additionalDataKeys[i];
+        let value = getKeyValue(key, 60);
+        if (value) {
+          data[key] = value;
+        }
+      }
+  
+      return data;
+    }
 
   function timeSince(date) {
     var seconds = Math.floor((new Date() - date) / 1000);
@@ -699,62 +735,6 @@ module.exports = function(app) {
     return Math.round(pa/100*10)/10;
   }
 
-  function calculateDistance(lat1, lon1, lat2, lon2) {
-    if ((lat1 == lat2) && (lon1 == lon2)) {
-      return 0;
-    }
-    else {
-      var radlat1 = Math.PI * lat1/180;
-      var radlat2 = Math.PI * lat2/180;
-      var theta = lon1-lon2;
-      var radtheta = Math.PI * theta/180;
-      var dist = Math.sin(radlat1) * Math.sin(radlat2) + Math.cos(radlat1) * Math.cos(radlat2) * Math.cos(radtheta);
-      if (dist > 1) {
-          dist = 1;
-      }
-      dist = Math.acos(dist);
-      dist = dist * 180/Math.PI;
-      dist = dist * 60 * 1.1515;
-      dist = dist * 0.8684; // Convert to Nautical miles
-      return dist;
-    }
-  }
-
-  function vesselMadeSignificantTurn() {
-    /*
-      Returns true if vessel has made a significant turn
-    */
-
-    if (previousCOGs.length < 6) {
-      return (false);
-    }
-    let delta = previousCOGs[5] - previousCOGs[0];
-    if (Math.abs(delta) > MINIMUM_TURN_DEGREES) {
-      app.debug(`Updating database, vessel turned ${delta} degrees`);
-      return (true);
-    } else {
-      return (false);
-    }
-  }
-
-  function vesselSlowedDownOrSpeededUp(threshold) {
-    /*
-      Returns true if vessel has gone above or below a speed threshold
-    */
-
-    if ((speedOverGround <= threshold) &&
-        (previousSpeeds.every(el => el > threshold)))  {
-      app.debug(`Updating database, vessel slowed down to ${speedOverGround} kt`);
-      return (true);
-    }
-    if ((speedOverGround > threshold) &&
-        (previousSpeeds.every(el => el <= threshold))) {
-      app.debug(`Updating database, vessel speeded up to ${speedOverGround} kt`);
-      return (true);
-    }
-    return (false);
-  }
-
   function processDelta(data) {
     let dict = data.updates[0].values[0];
     let path = dict.path;
@@ -768,75 +748,10 @@ module.exports = function(app) {
           app.debug(`Skipping position from GPS resource ${source}`);
 	        break;
 	      }
-        if (position) {
-          let distance = calculateDistance(position.latitude,
-                                           position.longitude,
-                                           value.latitude,
-                                           value.longitude);
-          let timeBetweenPositions = Date.now() - position.changedOn;
-          if ((timeBetweenPositions <= 2 * 60 * 1000) && (distance >= 5)) {
-                  app.error(`Erroneous position reading. ` +
-                      `Moved ${distance} miles in ${timeBetweenPositions/1000} seconds. ` +
-                            `Ignoring the position: ${position.latitude}, ${position.longitude}`);
-            return;
-          }
-
-          position.changedOn = Date.now();
-     
-          // Don't push updates more than once every 1 minute
-          if (timePassed >= 60 * 1000) {
-            // updateDatabase() is split to multiple if conditions for better debug messages
-
-            // Want submissions every DB_UPDATE_MINUTES at the very least
-	          if (timePassed >= DB_UPDATE_MINUTES * 60 * 1000) {
-              app.debug(`Updating database, ${DB_UPDATE_MINUTES} min passed since last update`);
-              position = value;
-              position.changedOn = Date.now();
-              updateDatabase();
-            }
-
-            // Or a meaningful time passed while moving
-            else if (
-              (speedOverGround >= SPEED_THRESHOLD) &&
-              (timePassed >= DB_UPDATE_MINUTES_MOVING * 60 * 1000)
-            ) {
-              app.debug(`Updating database, ${DB_UPDATE_MINUTES_MOVING} min passed while moving`);
-              position = value;
-              position.changedOn = Date.now();
-              updateDatabase();
-            }
-
-            // Or we moved a meaningful distance
-            else if (distance >= MIN_DISTANCE) {
-              app.debug(`Updating database, moved ${distance} miles`);
-              position = value;
-              position.changedOn = Date.now();
-              updateDatabase();
-            }
-
-            // Or we made a meaningful change of course while moving
-            else if (
-              (speedOverGround >= SPEED_THRESHOLD) && (vesselMadeSignificantTurn())
-            ) {
-              position = value;
-              position.changedOn = Date.now();
-              updateDatabase();
-            }
-
-            // Or the boat has slowed down or speeded up
-            else if (
-                 (vesselSlowedDownOrSpeededUp(SPEED_THRESHOLD)) ||
-                 (vesselSlowedDownOrSpeededUp(SPEED_THRESHOLD*2)) ||
-                 (vesselSlowedDownOrSpeededUp(SPEED_THRESHOLD*3))
-               ) {
-              position = value;
-              position.changedOn = Date.now();
-              updateDatabase();
-            }
-          }
-        } else {
+        if (timePassed >= SUBMIT_INTERVAL * 60 * 1000) {
           position = value;
           position.changedOn = Date.now();
+          updateDatabase();
         }
         break;
       case 'navigation.speedOverGround':
