@@ -539,6 +539,14 @@ module.exports = function(app) {
 
   function submitDataToServer() {
     db.all('SELECT * FROM buffer ORDER BY ts LIMIT 60', function(err, data) {
+      if (err) {
+        app.debug('Error querying buffer:', err);
+        return;
+      }
+      if (!data) {
+        app.debug('No data in the buffer');
+        return;
+      }
       if (data.length == 0) {
         app.debug('Local cache is empty, sending an empty ping');
       }
