@@ -35,7 +35,6 @@ const userAgent = `Saillogger plugin v${package.version}`;
 module.exports = function(app) {
   var plugin = {};
   var unsubscribes = [];
-  var submitProcess;
   var aisSubmissionProcess;
   var sendMetadataProcess;
   var metdataSubmitted = false;
@@ -44,7 +43,7 @@ module.exports = function(app) {
   var gpsSource;
   var configuration;
   var monitoringConfiguration;
-  var updateLastCalled = Date.now();
+  var updateLastCalled;
   var lastSuccessfulUpdate;
   var position;
   var speedOverGround;
@@ -70,7 +69,6 @@ module.exports = function(app) {
   plugin.stop = function() {
     app.debug(`Stopping the plugin`);
     clearInterval(sendMetadataProcess);
-    clearInterval(submitProcess);
     clearInterval(aisSubmissionProcess);
     if (db) {
       db.close();
@@ -112,7 +110,7 @@ module.exports = function(app) {
     gpsSource = options.source;
     deviceSerialNumber = machineIdSync();
 
-    app.setPluginStatus('Saillogger started. Please wait for a status update.');
+    app.setPluginStatus('Saillogger started. Please wait 60 seconds for a status update.');
 
     let dbFile= filePath.join(app.getDataDirPath(), 'saillogger_v2.sqlite3');
     db = new sqlite3.Database(dbFile);
@@ -127,9 +125,6 @@ module.exports = function(app) {
     db.run('CREATE TABLE IF NOT EXISTS configuration(id INTEGER PRIMARY KEY,' +
            '                                         config TEXT)');
     
-    getConfiguration();
-    sendMetadata();
-
     let subscription = {
       context: 'vessels.self',
       subscribe: [{
@@ -154,22 +149,19 @@ module.exports = function(app) {
       app.error('Subscription error');
     }, data => processDelta(data));
 
-    submitDataToServer();
-    updatePluginStatus();
-    // Send metadata and AIS targets after a warm-up period
+    getConfiguration();
+    sendMetadata();
+
+    // Refresh data after a warm-up period
     setTimeout( function() {
       sendMetadata();
       sendAisTargets();
-    }, 60 * 1000);
+      updatePluginStatus();
+    }, 30 * 1000);
 
     sendMetadataProcess = setInterval( function() {
       sendMetadata();
     }, SEND_METADATA_INTERVAL * 60 * 60 * 1000);
-
-    submitProcess = setInterval( function() {
-      submitDataToServer();
-      updatePluginStatus();
-    }, SUBMIT_INTERVAL * 60 * 1000);
 
     aisSubmissionProcess = setInterval( function() {
       sendAisTargets();
@@ -190,7 +182,7 @@ module.exports = function(app) {
             }
             if (lastSuccessfulUpdate) {
                 let since = timeSince(lastSuccessfulUpdate);
-                message += ` last connection to the server was ${since} ago.`;
+                message += ` last connection to the server was ${since}.`;
             } else {
                 message += ` no successful connection to the server since restart.`;
             }
@@ -331,6 +323,7 @@ module.exports = function(app) {
         monitoringConfiguration = JSON.parse(body);
         app.debug(`Monitoring configuration: ${JSON.stringify(monitoringConfiguration)}`);
         saveConfiguration();
+	updateDatabase();
       } else {
         app.debug('Failed to get monitoring configuration, trying to load from local storage');
         loadConfiguration();
@@ -533,6 +526,7 @@ module.exports = function(app) {
     db.run('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?, ?)', values, function(err) {
       windSpeedApparent = 0;
       maxSpeedOverGround = 0;
+      submitDataToServer();
     });
     position.changedOn = null;
   }
@@ -588,6 +582,7 @@ module.exports = function(app) {
         } else {
           app.debug(`Connection to the server failed, retry in ${SUBMIT_INTERVAL} min`);
         }
+	updatePluginStatus();
       });
     });
   }
@@ -687,25 +682,28 @@ module.exports = function(app) {
     var seconds = Math.floor((new Date() - date) / 1000);
     var interval = seconds / 31536000;
     if (interval > 1) {
-      return Math.floor(interval) + " years";
+      return Math.floor(interval) + " years ago";
     }
     interval = seconds / 2592000;
     if (interval > 1) {
-      return Math.floor(interval) + " months";
+      return Math.floor(interval) + " months ago";
     }
     interval = seconds / 86400;
     if (interval > 1) {
-      return Math.floor(interval) + " days";
+      return Math.floor(interval) + " days ago";
     }
     interval = seconds / 3600;
     if (interval > 1) {
-      return Math.floor(interval) + " hours";
+      return Math.floor(interval) + " hours ago";
     }
     interval = seconds / 60;
     if (interval > 1) {
-      return Math.floor(interval) + " minutes";
+      return Math.floor(interval) + " minutes ago";
     }
-    return Math.floor(seconds) + " seconds";
+    if (Math.floor(seconds) == 0) {
+      return "few moments ago"
+    }
+    return Math.floor(seconds) + " seconds ago";
   }
 
   function radiantToDegrees(rad) {
@@ -747,7 +745,11 @@ module.exports = function(app) {
     let dict = data.updates[0].values[0];
     let path = dict.path;
     let value = dict.value;
-    let timePassed = Date.now() - updateLastCalled;
+    let timePassed;
+
+    if (updateLastCalled) {
+      timePassed = Date.now() - updateLastCalled;
+    }
 
     switch (path) {
       case 'navigation.position':
@@ -755,8 +757,8 @@ module.exports = function(app) {
         if ((gpsSource) && (source != gpsSource)) {
           app.debug(`Skipping position from GPS resource ${source}`);
 	        break;
-	      }
-        if (timePassed >= SUBMIT_INTERVAL * 60 * 1000) {
+	}
+        if ((!timePassed) || (timePassed >= SUBMIT_INTERVAL * 60 * 1000)) {
           position = value;
           position.changedOn = Date.now();
           updateDatabase();
