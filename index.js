@@ -669,7 +669,7 @@ module.exports = function(app) {
   
       for (let i = 0; i < configuration.additionalDataKeys.length; i++) {
         let key = configuration.additionalDataKeys[i];
-        let value = getKeyValue(key, 60);
+        let value = getKeyValue(key, 90);
         if (value) {
           data[key] = value;
         }

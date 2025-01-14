@@ -1,6 +1,6 @@
 {
   "name": "signalk-saillogger",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "description": "Maintenance-free, fully automated logbook and remote boat monitoring solution",
   "main": "index.js",
   "signalk-plugin-enabled-by-default": true,
