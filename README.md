@@ -15,6 +15,7 @@ For additional information, visit:
 - [Saillogger.com](https://saillogger.com/)
 - [Support Pages](https://saillogger.com/support/)
 - [Community Forums](https://community.saillogger.com/)
+- [Video Tutorials and Demos](https://youtube.com/@Saillogger)
 
 ## Feedback
 We welcome feature requests and bug reports on our [community forum](https://community.saillogger.com).
