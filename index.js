@@ -35,16 +35,21 @@ const userAgent = `Saillogger plugin v${package.version}`;
 module.exports = function(app) {
   var plugin = {};
   var unsubscribes = [];
+  var queueLength = 0;
   var aisSubmissionProcess;
   var sendMetadataProcess;
+  var submitDataProcess;
   var metdataSubmitted = false;
   var db;
   var uuid;
   var gpsSource;
   var configuration;
   var monitoringConfiguration;
+  var retrieveMonitoringConfigInProgress;
   var updateLastCalled;
+  var dBInsertInProgress = false;
   var lastSuccessfulUpdate;
+  var submitLastCalled;
   var position;
   var speedOverGround;
   var maxSpeedOverGround;
@@ -70,6 +75,7 @@ module.exports = function(app) {
     app.debug(`Stopping the plugin`);
     clearInterval(sendMetadataProcess);
     clearInterval(aisSubmissionProcess);
+    clearInterval(submitDataProcess);
     if (db) {
       db.close();
     }
@@ -149,6 +155,7 @@ module.exports = function(app) {
       app.error('Subscription error');
     }, data => processDelta(data));
 
+    updatePluginStatus();
     getConfiguration();
     sendMetadata();
 
@@ -157,7 +164,7 @@ module.exports = function(app) {
       sendMetadata();
       sendAisTargets();
       updatePluginStatus();
-    }, 30 * 1000);
+    }, 60 * 1000);
 
     sendMetadataProcess = setInterval( function() {
       sendMetadata();
@@ -167,18 +174,26 @@ module.exports = function(app) {
       sendAisTargets();
     }, AIS_SUBMISSION_INTERVAL * 60 * 1000);
 
+    submitDataProcess = setInterval( function () {
+      let now = Date.now();
+      if ((!submitLastCalled) || (submitLastCalled - now > 2 * SUBMIT_INTERVAL * 60 * 1000)) {
+        app.debug(`No data has been sent to the server since ${submitLastCalled}, submitting`);
+        submitDataToServer();
+      }
+    }, SUBMIT_INTERVAL * 60 * 1000);
   }
 
   function updatePluginStatus() {
     db.get('SELECT COUNT(*) AS count FROM buffer', function(err, row) {
         if (err) {
-            app.debug('Error querying buffer count:', err);
+            app.debug('Error querying the local cache:', err);
         } else {
             let message;
-            if (row.count == 1) {
-                message = `${row.count} entry in the queue,`;
+            queueLength = row.count;
+            if (queueLength == 1) {
+                message = `${queueLength} entry in the local cache,`;
             } else {
-                message = `${row.count} entries in the queue,`;
+                message = `${queueLength} entries in the local cache,`;
             }
             if (lastSuccessfulUpdate) {
                 let since = timeSince(lastSuccessfulUpdate);
@@ -310,13 +325,19 @@ module.exports = function(app) {
   }
 
   function getConfiguration() {
+    if (retrieveMonitoringConfigInProgress) {
+      app.debug('Monitoring configuration retrieval already in progress');
+      return;
+    }
+    retrieveMonitoringConfigInProgress = true;
     app.debug('Retrieving monitoring configuration');
     let options = {
       uri: API_BASE + '/monitoring/' + uuid + '/configuration',
       method: 'GET',
       headers: {
         'User-Agent': userAgent,
-      }
+      },
+      timeout: 15000
     };
     request.get(options, function (error, response, body) {
       if (!error && response.statusCode == 200) {
@@ -328,6 +349,7 @@ module.exports = function(app) {
         app.debug('Failed to get monitoring configuration, trying to load from local storage');
         loadConfiguration();
       }
+      retrieveMonitoringConfigInProgress = false;
     });
   }
 
@@ -378,10 +400,11 @@ module.exports = function(app) {
       json: JSON.stringify(data),
       headers: {
         'User-Agent': userAgent,
-      }
+      },
+      timeout: 45000
     };
 
-    app.debug (`Metadata: ${JSON.stringify(data)}`);
+    app.debug (`Sending metadata`);
     request(postData, function (error, response, body) {
       if (!error && response.statusCode == 200) {
         app.debug('Successfully submitted metadata');
@@ -504,9 +527,6 @@ module.exports = function(app) {
   }
 
   function updateDatabase() {
-    let ts = Date.now();
-    updateLastCalled = ts;
-
     if ((!position) || (!position.changedOn)) {
       return
     }
@@ -523,26 +543,42 @@ module.exports = function(app) {
                   maxSpeedOverGround, courseOverGroundTrue, windSpeedApparent,
                   angleSpeedApparent, monitoringDataInJson];
 
-    db.run('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?, ?)', values, function(err) {
-      windSpeedApparent = 0;
-      maxSpeedOverGround = 0;
-      submitDataToServer();
-    });
-    position.changedOn = null;
+    if (!dBInsertInProgress) {
+      let timeSinceLastUpdate;
+      if (updateLastCalled) {
+        timeSinceLastUpdate = Date.now() - updateLastCalled;
+      }
+      if ((!timeSinceLastUpdate) || (timeSinceLastUpdate >= SUBMIT_INTERVAL * 60 * 1000)) {
+        dBInsertInProgress = true;
+        db.run('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?, ?)', values, function(err) {
+          app.debug(`Inserted logging and monitoring data into the local cache`);
+          queueLength++;
+          windSpeedApparent = 0;
+          maxSpeedOverGround = 0;
+          submitDataToServer();
+          dBInsertInProgress = false;
+          updateLastCalled = Date.now();
+        });
+        position.changedOn = null;
+      }
+    }
   }
 
   function submitDataToServer() {
-    db.all('SELECT * FROM buffer ORDER BY ts LIMIT 60', function(err, data) {
+    submitLastCalled = Date.now();
+    db.all('SELECT * FROM buffer ORDER BY ts LIMIT 180', function(err, data) {
       if (err) {
-        app.debug('Error querying buffer:', err);
+        app.debug('Error querying the local cache:', err);
         return;
       }
       if (!data) {
-        app.debug('No data in the buffer');
+        app.debug('No data in the local cache');
         return;
       }
       if (data.length == 0) {
         app.debug('Local cache is empty, sending an empty ping');
+      } else {
+        app.debug(`Submitting ${data.length} out of ${queueLength} entries from the local cache`);
       }
 
       let httpOptions = {
@@ -551,7 +587,8 @@ module.exports = function(app) {
         json: JSON.stringify(data),
         headers: {
           'User-Agent': userAgent,
-        }
+        },
+        timeout: 45000
       };
 
       request(httpOptions, function (error, response, body) {
@@ -572,8 +609,7 @@ module.exports = function(app) {
                 if (err) {
                     app.debug('Error querying buffer count:', err);
                 } else if (row.count > 1) {
-                    app.debug(`Cache not fully flushed, ${row.count} record(s) left. Continuing...`);
-                    submitDataToServer();
+                    app.debug(`Cache not fully flushed, processed until ${lastTs}, ${row.count} record(s) left.`);
                 }
             });
           });
@@ -604,7 +640,7 @@ module.exports = function(app) {
 
   function sendAisTargets() {
     if (!monitoringConfiguration) {
-      app.debug('Monitoring configuration not available yet');
+      app.debug('Monitoring configuration not available yet, skipping AIS submissions');
       return
     }
     if (!monitoringConfiguration.sendAisTargets) {
@@ -622,10 +658,11 @@ module.exports = function(app) {
       json: JSON.stringify(data),
       headers: {
         'User-Agent': userAgent,
-      }
+      },
+      timeout: 60000
     };
 
-    app.debug(`Sending AIS data for ${Object.keys(data).length} vessels`);
+    app.debug(`Sending AIS data for ${Object.keys(data.aisTargets).length} vessels`);
     request(httpOptions, function (error, response, responseData) {
       if (!error && response.statusCode == 200) {
         app.debug(`AIS data successfully submitted`);
@@ -745,24 +782,17 @@ module.exports = function(app) {
     let dict = data.updates[0].values[0];
     let path = dict.path;
     let value = dict.value;
-    let timePassed;
-
-    if (updateLastCalled) {
-      timePassed = Date.now() - updateLastCalled;
-    }
 
     switch (path) {
       case 'navigation.position':
         let source = data.updates[0]['$source'];
         if ((gpsSource) && (source != gpsSource)) {
           app.debug(`Skipping position from GPS resource ${source}`);
-	        break;
+	  break;
 	}
-        if ((!timePassed) || (timePassed >= SUBMIT_INTERVAL * 60 * 1000)) {
-          position = value;
-          position.changedOn = Date.now();
-          updateDatabase();
-        }
+        position = value;
+        position.changedOn = Date.now();
+        updateDatabase();
         break;
       case 'navigation.speedOverGround':
         // Keep the previous 3 values
