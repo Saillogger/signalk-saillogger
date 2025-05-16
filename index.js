@@ -566,7 +566,7 @@ module.exports = function(app) {
 
   function submitDataToServer() {
     submitLastCalled = Date.now();
-    db.all('SELECT * FROM buffer ORDER BY ts LIMIT 180', function(err, data) {
+    db.all('SELECT * FROM buffer ORDER BY ts LIMIT 60', function(err, data) {
       if (err) {
         app.debug('Error querying the local cache:', err);
         return;
@@ -616,7 +616,7 @@ module.exports = function(app) {
         } else if (!error && response.statusCode == 204) {
           app.debug('Server responded with HTTP-204');
         } else {
-          app.debug(`Connection to the server failed, retry in ${SUBMIT_INTERVAL} min`);
+          app.debug(`Connection to the server failed (${error}, Body: ${body}, Response: ${response}), retry in ${SUBMIT_INTERVAL} min`);
         }
 	updatePluginStatus();
       });
