@@ -24,7 +24,7 @@ const API_BASE = 'https://saillogger.com/api/v1/collector'
 const fs = require('fs')
 const filePath = require('path')
 const request = require('request')
-const sqlite3 = require('sqlite3-gyp')
+const Database = require('better-sqlite3')
 const express = require('express')
 const bodyParser = require('body-parser')
 const cors = require('cors')
@@ -119,17 +119,21 @@ module.exports = function(app) {
     app.setPluginStatus('Saillogger started. Please wait 60 seconds for a status update.');
 
     let dbFile= filePath.join(app.getDataDirPath(), 'saillogger_v2.sqlite3');
-    db = new sqlite3.Database(dbFile);
-    db.run('CREATE TABLE IF NOT EXISTS buffer(ts REAL,' +
-           '                                 latitude REAL,' +
-           '                                 longitude REAL,' +
-           '                                 speedOverGround REAL,' +
-           '                                 courseOverGroundTrue REAL,' +
-           '                                 windSpeedApparent REAL,' +
-           '                                 angleSpeedApparent REAL,' +
-           '                                 additionalData TEXT)');
-    db.run('CREATE TABLE IF NOT EXISTS configuration(id INTEGER PRIMARY KEY,' +
-           '                                         config TEXT)');
+    db = new Database(dbFile);
+    // Enable WAL mode for better concurrent access
+    db.pragma('journal_mode = WAL');
+    db.exec('CREATE TABLE IF NOT EXISTS buffer(ts REAL,' +
+            '                                 latitude REAL,' +
+            '                                 longitude REAL,' +
+            '                                 speedOverGround REAL,' +
+            '                                 courseOverGroundTrue REAL,' +
+            '                                 windSpeedApparent REAL,' +
+            '                                 angleSpeedApparent REAL,' +
+            '                                 additionalData TEXT)');
+    db.exec('CREATE TABLE IF NOT EXISTS configuration(id INTEGER PRIMARY KEY,' +
+            '                                         config TEXT)');
+    // Add index for better query performance
+    db.exec('CREATE INDEX IF NOT EXISTS idx_buffer_ts ON buffer(ts)');
     
     let subscription = {
       context: 'vessels.self',
@@ -184,26 +188,26 @@ module.exports = function(app) {
   }
 
   function updatePluginStatus() {
-    db.get('SELECT COUNT(*) AS count FROM buffer', function(err, row) {
-        if (err) {
-            app.debug('Error querying the local cache:', err);
-        } else {
-            let message;
-            queueLength = row.count;
-            if (queueLength == 1) {
-                message = `${queueLength} entry in the local cache,`;
-            } else {
-                message = `${queueLength} entries in the local cache,`;
-            }
-            if (lastSuccessfulUpdate) {
-                let since = timeSince(lastSuccessfulUpdate);
-                message += ` last connection to the server was ${since}.`;
-            } else {
-                message += ` no successful connection to the server since restart.`;
-            }
-            app.setPluginStatus(message);
-        }
-    });
+    try {
+      const stmt = db.prepare('SELECT COUNT(*) AS count FROM buffer');
+      const row = stmt.get();
+      let message;
+      queueLength = row.count;
+      if (queueLength == 1) {
+        message = `${queueLength} entry in the local cache,`;
+      } else {
+        message = `${queueLength} entries in the local cache,`;
+      }
+      if (lastSuccessfulUpdate) {
+        let since = timeSince(lastSuccessfulUpdate);
+        message += ` last connection to the server was ${since}.`;
+      } else {
+        message += ` no successful connection to the server since restart.`;
+      }
+      app.setPluginStatus(message);
+    } catch (err) {
+      app.debug('Error querying the local cache:', err);
+    }
   }
 
   function isVenusOS() {
@@ -299,29 +303,29 @@ module.exports = function(app) {
   }
 
   function saveConfiguration() {
-    config = JSON.stringify(monitoringConfiguration);
-    db.run('INSERT OR REPLACE INTO configuration(id, config) VALUES(1, ?)', [config], function(err) {
-      if (err) {
-        app.debug(`Failed to store configuration locally ${err}`);
-      } else {
-        app.debug('Configuration stored locally');
-      }
-    });
+    try {
+      const config = JSON.stringify(monitoringConfiguration);
+      const stmt = db.prepare('INSERT OR REPLACE INTO configuration(id, config) VALUES(1, ?)');
+      stmt.run(config);
+      app.debug('Configuration stored locally');
+    } catch (err) {
+      app.debug(`Failed to store configuration locally ${err}`);
+    }
   }
 
   function loadConfiguration() {
-    db.get('SELECT * FROM configuration WHERE id=1', function(err, row) {
-      if (err) {
-        app.debug('Failed to load configuration');
+    try {
+      const stmt = db.prepare('SELECT * FROM configuration WHERE id=1');
+      const row = stmt.get();
+      if (row) {
+        app.debug('Configuration loaded from local storage');
+        monitoringConfiguration = JSON.parse(row.config);
       } else {
-        if (row) {
-          app.debug('Configuration loaded from local storage');
-          monitoringConfiguration = JSON.parse(row.config);
-        } else {
-          app.debug('No locally stored configuration found');
-        }
+        app.debug('No locally stored configuration found');
       }
-    });
+    } catch (err) {
+      app.debug(`Failed to load configuration: ${err}`);
+    }
   }
 
   function getConfiguration() {
@@ -531,6 +535,17 @@ module.exports = function(app) {
       return
     }
 
+    let timeSinceLastUpdate;
+    let dateNow = Date.now();
+    if (updateLastCalled) {
+      timeSinceLastUpdate = dateNow  - updateLastCalled;
+    }
+    if ((timeSinceLastUpdate) && (timeSinceLastUpdate < SUBMIT_INTERVAL * 60 * 1000)) {
+      // Multiple GPS sources, updates coming in too frequently
+      return;
+    }
+    updateLastCalled = dateNow;
+
     let monitoringDataInJson = null;
     if (monitoringConfiguration) {
       let monitoringData = getMonitoringData(monitoringConfiguration);
@@ -544,82 +559,86 @@ module.exports = function(app) {
                   angleSpeedApparent, monitoringDataInJson];
 
     if (!dBInsertInProgress) {
-      let timeSinceLastUpdate;
-      if (updateLastCalled) {
-        timeSinceLastUpdate = Date.now() - updateLastCalled;
-      }
-      if ((!timeSinceLastUpdate) || (timeSinceLastUpdate >= SUBMIT_INTERVAL * 60 * 1000)) {
-        dBInsertInProgress = true;
-        db.run('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?, ?)', values, function(err) {
-          app.debug(`Inserted logging and monitoring data into the local cache`);
-          queueLength++;
-          windSpeedApparent = 0;
-          maxSpeedOverGround = 0;
-          submitDataToServer();
-          dBInsertInProgress = false;
-          updateLastCalled = Date.now();
-        });
-        position.changedOn = null;
+      dBInsertInProgress = true;
+      try {
+        const stmt = db.prepare('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?, ?)');
+        stmt.run(...values);
+        app.debug(`Inserted logging and monitoring data into the local cache`);
+        queueLength++;
+        windSpeedApparent = 0;
+        maxSpeedOverGround = 0;
+        submitDataToServer();
+      } catch (err) {
+        app.debug(`Failed to insert data: ${err}`);
+      } finally {
+        dBInsertInProgress = false;
       }
     }
   }
 
   function submitDataToServer() {
     submitLastCalled = Date.now();
-    db.all('SELECT * FROM buffer ORDER BY ts LIMIT 60', function(err, data) {
-      if (err) {
-        app.debug('Error querying the local cache:', err);
-        return;
-      }
-      if (!data) {
-        app.debug('No data in the local cache');
-        return;
-      }
-      if (data.length == 0) {
-        app.debug('Local cache is empty, sending an empty ping');
-      } else {
-        app.debug(`Submitting ${data.length} out of ${queueLength} entries from the local cache`);
-      }
 
-      let httpOptions = {
-        uri: API_BASE + '/' + uuid + '/push',
-        method: 'POST',
-        json: JSON.stringify(data),
-        headers: {
-          'User-Agent': userAgent,
-        },
-        timeout: 45000
-      };
+    let data;
+    try {
+      const stmt = db.prepare('SELECT * FROM buffer ORDER BY ts LIMIT 60');
+      data = stmt.all();
+    } catch (err) {
+      app.debug('Error querying the local cache:', err);
+      return;
+    }
 
-      request(httpOptions, function (error, response, body) {
-        if (!error && response.statusCode == 200) {
-          let lastTs = body.processedUntil;
-          app.debug(`Successfully submitted ${data.length} data record(s)`);
-          if (body.refreshMetadata) {
-            app.debug('Server requested metadata refresh');
-            sendMetadata();
-          }
-          if (monitoringConfiguration && (body.configurationVersion > monitoringConfiguration.version)) {
-            app.debug(`New monitoring configuration available (v${body.configurationVersion})`);
-            getConfiguration();
-          }
-          db.run('DELETE FROM buffer where ts <= ' + lastTs, function(err) {
-            lastSuccessfulUpdate = Date.now();
-            db.get('SELECT COUNT(*) AS count FROM buffer', function(err, row) {
-                if (err) {
-                    app.debug('Error querying buffer count:', err);
-                } else if (row.count > 1) {
-                    app.debug(`Cache not fully flushed, processed until ${lastTs}, ${row.count} record(s) left.`);
-                }
-            });
-          });
-        } else if (!error && response.statusCode == 204) {
-          app.debug('Server responded with HTTP-204');
-        } else {
-          app.debug(`Connection to the server failed (${error}, Body: ${body}, Response: ${response}), retry in ${SUBMIT_INTERVAL} min`);
+    if (!data) {
+      app.debug('No data in the local cache');
+      return;
+    }
+    if (data.length == 0) {
+      app.debug('Local cache is empty, sending an empty ping');
+    } else {
+      app.debug(`Submitting ${data.length} out of ${queueLength} entries from the local cache`);
+    }
+
+    let httpOptions = {
+      uri: API_BASE + '/' + uuid + '/push',
+      method: 'POST',
+      json: JSON.stringify(data),
+      headers: {
+        'User-Agent': userAgent,
+      },
+      timeout: 45000
+    };
+
+    request(httpOptions, function (error, response, body) {
+      if (!error && response.statusCode == 200) {
+        let lastTs = body.processedUntil;
+        app.debug(`Successfully submitted ${data.length} data record(s)`);
+        if (body.refreshMetadata) {
+          app.debug('Server requested metadata refresh');
+          sendMetadata();
         }
-	updatePluginStatus();
-      });
+        if (monitoringConfiguration && (body.configurationVersion > monitoringConfiguration.version)) {
+          app.debug(`New monitoring configuration available (v${body.configurationVersion})`);
+          getConfiguration();
+        }
+        try {
+          const deleteStmt = db.prepare('DELETE FROM buffer WHERE ts <= ?');
+          deleteStmt.run(lastTs);
+          lastSuccessfulUpdate = Date.now();
+
+          const countStmt = db.prepare('SELECT COUNT(*) AS count FROM buffer');
+          const row = countStmt.get();
+          if (row.count > 1) {
+            app.debug(`Cache not fully flushed, processed until ${lastTs}, ${row.count} record(s) left.`);
+          }
+        } catch (err) {
+          app.debug(`Error deleting from buffer: ${err}`);
+        }
+      } else if (!error && response.statusCode == 204) {
+        app.debug('Server responded with HTTP-204');
+      } else {
+        app.debug(`${response?.statusCode ? `HTTP-${response.statusCode}` : error || 'Unknown error'}, retry in ${SUBMIT_INTERVAL} min`);
+      }
+      updatePluginStatus();
     });
   }
 
