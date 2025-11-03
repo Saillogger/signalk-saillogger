@@ -53,6 +53,8 @@ module.exports = function(app) {
   var position;
   var speedOverGround;
   var maxSpeedOverGround;
+  var portEngineHours;
+  var starboardEngineHours;
   var courseOverGroundTrue;
   var windSpeedApparent = 0;
   var angleSpeedApparent;
@@ -118,7 +120,7 @@ module.exports = function(app) {
 
     app.setPluginStatus('Saillogger started. Please wait 60 seconds for a status update.');
 
-    let dbFile= filePath.join(app.getDataDirPath(), 'saillogger_v2.sqlite3');
+    let dbFile= filePath.join(app.getDataDirPath(), 'saillogger_v3.sqlite3');
     db = new Database(dbFile);
     // Enable WAL mode for better concurrent access
     db.pragma('journal_mode = WAL');
@@ -129,6 +131,8 @@ module.exports = function(app) {
             '                                 courseOverGroundTrue REAL,' +
             '                                 windSpeedApparent REAL,' +
             '                                 angleSpeedApparent REAL,' +
+            '                                 portEngineHours REAL,' +
+            '                                 starboardEngineHours REAL,' +
             '                                 additionalData TEXT)');
     db.exec('CREATE TABLE IF NOT EXISTS configuration(id INTEGER PRIMARY KEY,' +
             '                                         config TEXT)');
@@ -151,6 +155,12 @@ module.exports = function(app) {
         period: POLL_INTERVAL * 1000
       }, {
         path: 'environment.wind.angleApparent',
+        period: POLL_INTERVAL * 1000
+      }, {
+        path: 'propulsion.port.runTime',
+        period: POLL_INTERVAL * 1000
+      }, {
+        path: 'propulsion.starboard.runTime',
         period: POLL_INTERVAL * 1000
       }]
     };
@@ -556,17 +566,20 @@ module.exports = function(app) {
     }
     let values = [position.changedOn, position.latitude, position.longitude,
                   maxSpeedOverGround, courseOverGroundTrue, windSpeedApparent,
-                  angleSpeedApparent, monitoringDataInJson];
+                  angleSpeedApparent, portEngineHours, starboardEngineHours,
+                  monitoringDataInJson];
 
     if (!dBInsertInProgress) {
       dBInsertInProgress = true;
       try {
-        const stmt = db.prepare('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?, ?)');
+        const stmt = db.prepare('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
         stmt.run(...values);
         app.debug(`Inserted logging and monitoring data into the local cache`);
         queueLength++;
         windSpeedApparent = 0;
         maxSpeedOverGround = 0;
+	portEngineHours = null;
+	starboardEngineHours = null;
         submitDataToServer();
       } catch (err) {
         app.debug(`Failed to insert data: ${err}`);
@@ -831,6 +844,12 @@ module.exports = function(app) {
         break;
       case 'environment.wind.angleApparent':
         angleSpeedApparent = radiantToDegrees(value);
+        break;
+      case 'propulsion.port.runTime':
+        portEngineHours = Math.round(10 * value / 3600) / 10;
+        break;
+      case 'propulsion.starboard.runTime':
+        starboardEngineHours = Math.round(10 * value / 3600) / 10;
         break;
       default:
         app.error('Unknown path: ' + path);
