@@ -24,7 +24,7 @@ const API_BASE = 'https://saillogger.com/api/v1/collector'
 const fs = require('fs')
 const filePath = require('path')
 const request = require('request')
-const Database = require('better-sqlite3')
+const { BufferStore, ConfigStore } = require('./lib/storage')
 const express = require('express')
 const bodyParser = require('body-parser')
 const cors = require('cors')
@@ -40,7 +40,8 @@ module.exports = function(app) {
   var sendMetadataProcess;
   var submitDataProcess;
   var metdataSubmitted = false;
-  var db;
+  var bufferStore;
+  var configStore;
   var uuid;
   var gpsSource;
   var configuration;
@@ -78,9 +79,6 @@ module.exports = function(app) {
     clearInterval(sendMetadataProcess);
     clearInterval(aisSubmissionProcess);
     clearInterval(submitDataProcess);
-    if (db) {
-      db.close();
-    }
   };
 
   plugin.schema = {
@@ -120,24 +118,14 @@ module.exports = function(app) {
 
     app.setPluginStatus('Saillogger started. Please wait 60 seconds for a status update.');
 
-    let dbFile= filePath.join(app.getDataDirPath(), 'saillogger_v3.sqlite3');
-    db = new Database(dbFile);
-    // Enable WAL mode for better concurrent access
-    db.pragma('journal_mode = WAL');
-    db.exec('CREATE TABLE IF NOT EXISTS buffer(ts REAL,' +
-            '                                 latitude REAL,' +
-            '                                 longitude REAL,' +
-            '                                 speedOverGround REAL,' +
-            '                                 courseOverGroundTrue REAL,' +
-            '                                 windSpeedApparent REAL,' +
-            '                                 angleSpeedApparent REAL,' +
-            '                                 portEngineHours REAL,' +
-            '                                 starboardEngineHours REAL,' +
-            '                                 additionalData TEXT)');
-    db.exec('CREATE TABLE IF NOT EXISTS configuration(id INTEGER PRIMARY KEY,' +
-            '                                         config TEXT)');
-    // Add index for better query performance
-    db.exec('CREATE INDEX IF NOT EXISTS idx_buffer_ts ON buffer(ts)');
+    const dataDir = app.getDataDirPath();
+    bufferStore = new BufferStore(filePath.join(dataDir, 'saillogger_buffer.ndjson'));
+    configStore = new ConfigStore(filePath.join(dataDir, 'saillogger_config.json'));
+
+    const legacySqlitePath = filePath.join(dataDir, 'saillogger_v3.sqlite3');
+    if (fs.existsSync(legacySqlitePath)) {
+      app.debug(`Legacy SQLite cache found at ${legacySqlitePath}; leaving it untouched.`);
+    }
     
     let subscription = {
       context: 'vessels.self',
@@ -190,7 +178,7 @@ module.exports = function(app) {
 
     submitDataProcess = setInterval( function () {
       let now = Date.now();
-      if ((!submitLastCalled) || (submitLastCalled - now > 2 * SUBMIT_INTERVAL * 60 * 1000)) {
+      if ((!submitLastCalled) || (now - submitLastCalled > 2 * SUBMIT_INTERVAL * 60 * 1000)) {
         app.debug(`No data has been sent to the server since ${submitLastCalled}, submitting`);
         submitDataToServer();
       }
@@ -199,10 +187,8 @@ module.exports = function(app) {
 
   function updatePluginStatus() {
     try {
-      const stmt = db.prepare('SELECT COUNT(*) AS count FROM buffer');
-      const row = stmt.get();
       let message;
-      queueLength = row.count;
+      queueLength = bufferStore ? bufferStore.count() : 0;
       if (queueLength == 1) {
         message = `${queueLength} entry in the local cache,`;
       } else {
@@ -314,9 +300,7 @@ module.exports = function(app) {
 
   function saveConfiguration() {
     try {
-      const config = JSON.stringify(monitoringConfiguration);
-      const stmt = db.prepare('INSERT OR REPLACE INTO configuration(id, config) VALUES(1, ?)');
-      stmt.run(config);
+      configStore.save(monitoringConfiguration);
       app.debug('Configuration stored locally');
     } catch (err) {
       app.debug(`Failed to store configuration locally ${err}`);
@@ -325,11 +309,10 @@ module.exports = function(app) {
 
   function loadConfiguration() {
     try {
-      const stmt = db.prepare('SELECT * FROM configuration WHERE id=1');
-      const row = stmt.get();
-      if (row) {
+      const cfg = configStore.load();
+      if (cfg) {
         app.debug('Configuration loaded from local storage');
-        monitoringConfiguration = JSON.parse(row.config);
+        monitoringConfiguration = cfg;
       } else {
         app.debug('No locally stored configuration found');
       }
@@ -564,16 +547,23 @@ module.exports = function(app) {
       getConfiguration();
       monitoringDataInJson = null;
     }
-    let values = [position.changedOn, position.latitude, position.longitude,
-                  maxSpeedOverGround, courseOverGroundTrue, windSpeedApparent,
-                  angleSpeedApparent, portEngineHours, starboardEngineHours,
-                  monitoringDataInJson];
+    const row = {
+      ts: position.changedOn,
+      latitude: position.latitude,
+      longitude: position.longitude,
+      speedOverGround: maxSpeedOverGround,
+      courseOverGroundTrue: courseOverGroundTrue,
+      windSpeedApparent: windSpeedApparent,
+      angleSpeedApparent: angleSpeedApparent,
+      portEngineHours: portEngineHours,
+      starboardEngineHours: starboardEngineHours,
+      additionalData: monitoringDataInJson
+    };
 
     if (!dBInsertInProgress) {
       dBInsertInProgress = true;
       try {
-        const stmt = db.prepare('INSERT INTO buffer VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-        stmt.run(...values);
+        bufferStore.insert(row);
         app.debug(`Inserted logging and monitoring data into the local cache`);
         queueLength++;
         windSpeedApparent = 0;
@@ -594,8 +584,7 @@ module.exports = function(app) {
 
     let data;
     try {
-      const stmt = db.prepare('SELECT * FROM buffer ORDER BY ts LIMIT 60');
-      data = stmt.all();
+      data = bufferStore.peek(60);
     } catch (err) {
       app.debug('Error querying the local cache:', err);
       return;
@@ -623,25 +612,56 @@ module.exports = function(app) {
 
     request(httpOptions, function (error, response, body) {
       if (!error && response.statusCode == 200) {
-        let lastTs = body.processedUntil;
+        let responseBody = body;
+        if (typeof responseBody === 'string') {
+          try {
+            responseBody = JSON.parse(responseBody);
+          } catch (err) {
+            if (data.length === 0) {
+              app.debug('Server acknowledged empty ping');
+              lastSuccessfulUpdate = Date.now();
+              updatePluginStatus();
+              return;
+            }
+            app.debug(`Server returned invalid JSON response; keeping local cache: ${err}`);
+            updatePluginStatus();
+            return;
+          }
+        }
+        if (!responseBody || typeof responseBody !== 'object') {
+          if (data.length === 0) {
+            app.debug('Server acknowledged empty ping');
+            lastSuccessfulUpdate = Date.now();
+            updatePluginStatus();
+            return;
+          }
+          app.debug('Server returned an empty or invalid response; keeping local cache');
+          updatePluginStatus();
+          return;
+        }
+
         app.debug(`Successfully submitted ${data.length} data record(s)`);
-        if (body.refreshMetadata) {
+        if (responseBody.refreshMetadata) {
           app.debug('Server requested metadata refresh');
           sendMetadata();
         }
-        if (monitoringConfiguration && (body.configurationVersion > monitoringConfiguration.version)) {
-          app.debug(`New monitoring configuration available (v${body.configurationVersion})`);
+        if (monitoringConfiguration && (responseBody.configurationVersion > monitoringConfiguration.version)) {
+          app.debug(`New monitoring configuration available (v${responseBody.configurationVersion})`);
           getConfiguration();
         }
+        if (data.length === 0 && responseBody.processedUntil === undefined) {
+          lastSuccessfulUpdate = Date.now();
+          updatePluginStatus();
+          return;
+        }
         try {
-          const deleteStmt = db.prepare('DELETE FROM buffer WHERE ts <= ?');
-          deleteStmt.run(lastTs);
+          const lastTs = responseBody.processedUntil;
+          bufferStore.deleteUpTo(lastTs);
           lastSuccessfulUpdate = Date.now();
 
-          const countStmt = db.prepare('SELECT COUNT(*) AS count FROM buffer');
-          const row = countStmt.get();
-          if (row.count > 1) {
-            app.debug(`Cache not fully flushed, processed until ${lastTs}, ${row.count} record(s) left.`);
+          const remaining = bufferStore.count();
+          if (remaining > 1) {
+            app.debug(`Cache not fully flushed, processed until ${lastTs}, ${remaining} record(s) left.`);
           }
         } catch (err) {
           app.debug(`Error deleting from buffer: ${err}`);

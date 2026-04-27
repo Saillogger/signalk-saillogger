@@ -1,6 +1,6 @@
 {
   "name": "signalk-saillogger",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "description": "Maintenance-free, fully automated logbook and remote boat monitoring solution",
   "main": "index.js",
   "signalk-plugin-enabled-by-default": true,
@@ -13,7 +13,6 @@
   "author": "Saillogger LLC",
   "license": "Apache-2.0",
   "dependencies": {
-    "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "node-machine-id": "^1.1.12",
