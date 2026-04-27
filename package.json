@@ -13,8 +13,6 @@
   "author": "Saillogger LLC",
   "license": "Apache-2.0",
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.18.2",
     "node-machine-id": "^1.1.12",
     "request": "^2.88.0"
   },

@@ -18,16 +18,12 @@ const POLL_INTERVAL = 5               // Poll every N seconds
 const SUBMIT_INTERVAL = 1             // Submit to server every N minutes
 const AIS_SUBMISSION_INTERVAL = 5     // Submit AIS data every N minutes
 const SEND_METADATA_INTERVAL = 1      // Submit to API every N hours
-const CONFIGURATION_PORT = 1977	      // Port number for configuration
 const API_BASE = 'https://saillogger.com/api/v1/collector'
 
 const fs = require('fs')
 const filePath = require('path')
 const request = require('request')
 const { BufferStore, ConfigStore } = require('./lib/storage')
-const express = require('express')
-const bodyParser = require('body-parser')
-const cors = require('cors')
 const { machineId, machineIdSync } = require('node-machine-id');
 const package = require('./package.json');
 const userAgent = `Saillogger plugin v${package.version}`;
@@ -101,11 +97,7 @@ module.exports = function(app) {
     app.debug(`Running on ${platform}`);
 
     if (!options.uuid) {
-      if ( isVenusOS() ) {
-        // We spin up the automatic configuration interface for Venus OS only
-        app.debug('Collector ID is required, going into configuration mode');
-        setupWebServerForConfiguration();
-      }
+      app.debug('Collector ID is required');
       return
     } else {
       app.debug(`Starting the plugin with collector ID ${options.uuid}`);
@@ -221,55 +213,6 @@ module.exports = function(app) {
       name = null;
     }
     return name;
-  }
-
-  function setupWebServerForConfiguration() {
-    var expressApp = express();
-    var corsOptions = {
-      origin: 'http://cdn.saillogger.com',
-      optionsSuccessStatus: 200
-    }
-    expressApp.use(cors(corsOptions));
-    expressApp.use(bodyParser.urlencoded({
-      extended: true,
-    }));
-
-    expressApp.post('/registerCollector', function (req, res, next) { 
-      const model = getVictronDeviceModel();
-      if (configuration.uuid) {
-        app.debug(`Received a configuration request but collector id already set, ignoring`);
-        return res.json({
-          success: false,
-	        reason: 'CollectorID already set',
-	        model: model
-        });
-      }
-      let collectorId = req.body.collectorId;
-      app.debug(`Received request to configure collector with ${collectorId}`);
-      if (!collectorId) {
-        res.json({
-          success: false,
-          reason: 'No CollectorID',
-          model: model
-        });
-      } else {
-        configuration.uuid = collectorId;
-        app.savePluginOptions(configuration, () => {
-          app.debug(`Collector ID saved (${collectorId}), restarting the plugin`);
-          // Start the plugin with proper collectorId now
-          startPlugin(configuration);
-          res.json({
-            success: true,
-            reason: null,
-            model: model
-          });
-        });
-      }
-    })
-
-    expressApp.listen(CONFIGURATION_PORT, function () {
-      app.debug(`Configuration web server listening on port ${CONFIGURATION_PORT}`);
-    })
   }
 
   // Find the platform we are running on
