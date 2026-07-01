@@ -19,11 +19,16 @@ const SUBMIT_INTERVAL = 1             // Submit to server every N minutes
 const AIS_SUBMISSION_INTERVAL = 5     // Submit AIS data every N minutes
 const SEND_METADATA_INTERVAL = 1      // Submit to API every N hours
 const API_BASE = 'https://saillogger.com/api/v1/collector'
+const DSC_PGN = 129808                // NMEA 2000 DSC Call Information
+const DSC_MAX_ATTEMPTS = 3            // DSC alert delivery attempts before dropping
+const DSC_RETRY_INTERVAL = 15         // Seconds between DSC delivery attempts
+const DSE_PAIR_WINDOW = 2             // Minutes to pair a DSE refinement with its DSC call
 
 const fs = require('fs')
 const filePath = require('path')
 const request = require('request')
 const { BufferStore, ConfigStore } = require('./lib/storage')
+const { parseDsc, parseDse, refinePosition, normalizePgn129808 } = require('./lib/dsc')
 const { machineId, machineIdSync } = require('node-machine-id');
 const package = require('./package.json');
 const userAgent = `Saillogger plugin v${package.version}`;
@@ -59,6 +64,10 @@ module.exports = function(app) {
   var previousCOGs = [];
   var deviceSerialNumber;
   var aisTarget = {};
+  var dscStarted = false;
+  var dscParsersRegistered = false;
+  var recentDscCalls = [];
+  var dscRetryTimers = [];
   const selfMmsi = app.getSelfPath('mmsi');
 
   plugin.id = "signalk-saillogger";
@@ -75,6 +84,11 @@ module.exports = function(app) {
     clearInterval(sendMetadataProcess);
     clearInterval(aisSubmissionProcess);
     clearInterval(submitDataProcess);
+    dscStarted = false;
+    dscRetryTimers.forEach(clearTimeout);
+    dscRetryTimers = [];
+    recentDscCalls = [];
+    app.removeListener('N2KAnalyzerOut', handleDscPgn);
   };
 
   plugin.schema = {
@@ -148,6 +162,23 @@ module.exports = function(app) {
     app.subscriptionmanager.subscribe(subscription, unsubscribes, function() {
       app.error('Subscription error');
     }, data => processDelta(data));
+
+    // DSC calls are event-driven and safety-critical: parse and forward each
+    // one immediately rather than buffering. Always on; both NMEA 0183
+    // ($CDDSC/$CDDSE) and NMEA 2000 (PGN 129808) are handled.
+    dscStarted = true;
+    // SignalK has no API to unregister an nmea0183sentenceParser, so register
+    // the 0183 parsers only once per process lifetime; a restart would otherwise
+    // stack duplicate copies that each forward the same call.
+    if (!dscParsersRegistered) {
+      app.emitPropertyValue('nmea0183sentenceParser', { sentence: 'DSC', parser: handleDscSentence });
+      app.emitPropertyValue('nmea0183sentenceParser', { sentence: 'DSE', parser: handleDseSentence });
+      dscParsersRegistered = true;
+    }
+    // Remove-before-add keeps the N2K listener idempotent even if the server
+    // ever calls start() again without an intervening stop().
+    app.removeListener('N2KAnalyzerOut', handleDscPgn);
+    app.on('N2KAnalyzerOut', handleDscPgn);
 
     updatePluginStatus();
     getConfiguration();
@@ -665,6 +696,174 @@ module.exports = function(app) {
         app.debug('Submission of AIS data failed');
       }
     });
+  }
+
+  function ownPositionNow() {
+    let pos = app.getSelfPath('navigation.position');
+    if (pos && pos.value && typeof pos.value.latitude === 'number') {
+      return { latitude: pos.value.latitude, longitude: pos.value.longitude };
+    }
+    return null;
+  }
+
+  function sendDscEvent(event, attempt, targetUuid) {
+    attempt = attempt || 1;
+    // Bind the uuid from when the call arrived, so a retry that fires after a
+    // restart with a different Collector ID still posts to the original boat.
+    targetUuid = targetUuid || uuid;
+    let httpOptions = {
+      uri: API_BASE + '/dsc/' + targetUuid + '/push',
+      method: 'POST',
+      json: JSON.stringify(event),
+      headers: {
+        'User-Agent': userAgent,
+      },
+      timeout: 30000
+    };
+    request(httpOptions, function (error, response, body) {
+      let status = response ? response.statusCode : null;
+      if (!error && status >= 200 && status < 300) {
+        // 2xx = accepted, including a server-deduped repeat.
+        app.debug(`DSC ${event.category} call from MMSI ${event.mmsi || 'unknown'} submitted (HTTP-${status})`);
+      } else if (!error && status >= 300 && status < 500) {
+        // Permanent: a 4xx client error (400 bad body, 404 unknown collector id)
+        // or a 3xx redirect a POST will not follow. Retrying will not help.
+        app.debug(`DSC submission not accepted (HTTP-${status}), dropping`);
+      } else if (attempt < DSC_MAX_ATTEMPTS) {
+        // Transient failure (5xx, network/timeout, or an undiagnosable response):
+        // retry, then drop. Skip scheduling if the plugin has since stopped so a
+        // late callback cannot leak a timer past stop() or re-send under a new uuid.
+        if (!dscStarted) return;
+        app.debug(`DSC submission failed (${status ? `HTTP-${status}` : error}, attempt ${attempt}/${DSC_MAX_ATTEMPTS}), retrying in ${DSC_RETRY_INTERVAL}s`);
+        let timer = setTimeout(function () {
+          dscRetryTimers = dscRetryTimers.filter(function (t) { return t !== timer; });
+          if (dscStarted) sendDscEvent(event, attempt + 1, targetUuid);
+        }, DSC_RETRY_INTERVAL * 1000);
+        dscRetryTimers.push(timer);
+      } else {
+        app.debug(`DSC submission failed after ${DSC_MAX_ATTEMPTS} attempts, dropping`);
+      }
+    });
+  }
+
+  function forwardDscCall(parsed, meta) {
+    let event = Object.assign({
+      receivedAt: meta.receivedAt || new Date().toISOString(),
+      source: meta.source,
+      raw: meta.raw
+    }, parsed);
+    let ownPosition = ownPositionNow();
+    if (ownPosition) {
+      event.ownPosition = ownPosition;
+    }
+    // selfMmsi comes straight from the data model (may be a number or an
+    // unpadded string); event.mmsi is always a 9-digit string, so compare in
+    // a normalized form.
+    if (event.mmsi && selfMmsi != null &&
+        event.mmsi === String(selfMmsi).padStart(9, '0')) {
+      event.self = true;
+    }
+    sendDscEvent(event);
+    return event;
+  }
+
+  // Keep a recently forwarded DSC call so a following $--DSE sentence can refine
+  // its (whole-minute) position. DSC traffic is rare, so a short in-memory list
+  // pruned by the pairing window is enough.
+  function recordDscForDse(event) {
+    recentDscCalls.push({ event: event, ts: Date.now() });
+    let cutoff = Date.now() - DSE_PAIR_WINDOW * 60 * 1000;
+    recentDscCalls = recentDscCalls.filter(function (c) { return c.ts >= cutoff; });
+  }
+
+  function findRecentDscForDse(mmsi) {
+    let cutoff = Date.now() - DSE_PAIR_WINDOW * 60 * 1000;
+    for (let i = recentDscCalls.length - 1; i >= 0; i--) {
+      if (recentDscCalls[i].ts < cutoff) break;
+      if (recentDscCalls[i].event.mmsi === mmsi) {
+        return recentDscCalls[i].event;
+      }
+    }
+    return null;
+  }
+
+  function handleDscSentence(input) {
+    if (!dscStarted) return null;
+    try {
+      let parsed = parseDsc(input.parts);
+      if (!parsed) return null;
+      if (parsed.position) {
+        parsed.positionResolution = 'minute';
+      }
+      let event = forwardDscCall(parsed, {
+        source: 'nmea0183',
+        raw: input.sentence,
+        receivedAt: input.tags && input.tags.timestamp
+      });
+      if (event.mmsi && event.position && event.positionResolution === 'minute') {
+        recordDscForDse(event);
+      }
+    } catch (err) {
+      app.debug(`DSC parse failed: ${err.message}`);
+    }
+    // Forward-only: consume the sentence, emit no Signal K delta.
+    return null;
+  }
+
+  function handleDseSentence(input) {
+    if (!dscStarted) return null;
+    try {
+      let ext = parseDse(input.parts);
+      if (!ext) return null;
+      let target = findRecentDscForDse(ext.mmsi);
+      if (!target) return null;
+      let refined = refinePosition(target.position, ext);
+      let event = Object.assign({}, target, {
+        position: refined,
+        positionResolution: 'enhanced',
+        positionRefined: true,
+        raw: input.sentence,
+        receivedAt: new Date().toISOString()
+      });
+      // Re-sample own position so the observer annotation matches when the
+      // refinement is forwarded, not when the original DSC call arrived.
+      let ownPosition = ownPositionNow();
+      if (ownPosition) {
+        event.ownPosition = ownPosition;
+      } else {
+        delete event.ownPosition;
+      }
+      sendDscEvent(event);
+    } catch (err) {
+      app.debug(`DSE parse failed: ${err.message}`);
+    }
+    return null;
+  }
+
+  function handleDscPgn(pgnData) {
+    if (!dscStarted || !pgnData || pgnData.pgn !== DSC_PGN) return;
+    try {
+      // Dump the raw PGN field shape so the actual canboatjs field naming on
+      // this server can be analyzed (camelCase vs. canboat's spaced form).
+      app.debug(`DSC PGN 129808 received; raw fields: ${JSON.stringify(pgnData.fields)}`);
+      let parsed = normalizePgn129808(pgnData);
+      let fieldCount = pgnData.fields ? Object.keys(pgnData.fields).length : 0;
+      if (parsed.category === 'unknown' && !parsed.mmsi && !parsed.position) {
+        // Nothing usable decoded (e.g. a field-key mismatch): log the shape for
+        // analysis but do not forward noise to the backend.
+        if (fieldCount) {
+          app.debug(`DSC PGN 129808 did not decode despite ${fieldCount} field(s); ` +
+            `unrecognized field keys: ${Object.keys(pgnData.fields).join(', ')}`);
+        }
+        return;
+      }
+      forwardDscCall(parsed, {
+        source: 'n2k',
+        raw: pgnData.fields
+      });
+    } catch (err) {
+      app.debug(`PGN 129808 handling failed: ${err.message}`);
+    }
   }
 
   function getMonitoringData(configuration) {

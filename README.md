@@ -18,6 +18,9 @@ For additional information, visit:
 - [Community Forums](https://community.saillogger.com/)
 - [Video Tutorials and Demos](https://youtube.com/@Saillogger)
 
+## DSC Alerts
+The plugin parses DSC (VHF Digital Selective Calling) calls from NMEA 0183 (`$CDDSC`/`$CDDSE`) and NMEA 2000 (PGN 129808) and forwards them to Saillogger immediately, so distress, urgency, and safety traffic in your area is captured as it is received.
+
 ## Feedback
 We welcome feature requests and bug reports on our [community forum](https://community.saillogger.com).
 

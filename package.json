@@ -1,11 +1,11 @@
 {
   "name": "signalk-saillogger",
-  "version": "5.1.0",
+  "version": "5.2.0",
   "description": "Maintenance-free, fully automated logbook and remote boat monitoring solution",
   "main": "index.js",
   "signalk-plugin-enabled-by-default": true,
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test"
   },
   "keywords": [
     "signalk-node-server-plugin"

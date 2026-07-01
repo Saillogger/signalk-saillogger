@@ -1,5 +1,8 @@
 .DS_Store
 package-lock.json
+CLAUDE.md
+docs/
+
 # Logs
 logs
 *.log
