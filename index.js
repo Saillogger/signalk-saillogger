@@ -904,7 +904,9 @@ module.exports = function(app) {
       for (let i = 0; i < configuration.additionalDataKeys.length; i++) {
         let key = configuration.additionalDataKeys[i];
         let value = getKeyValue(key, 90);
-        if (value) {
+        // A value of 0 is a reading (an empty tank, no consumption), so it
+        // is sent like any other.
+        if (value || value === 0) {
           data[key] = value;
         }
       }
