@@ -392,7 +392,7 @@ module.exports = function(app) {
       return {
         beam: vessel.design?.beam?.value,
         length: vessel.design?.length?.value,
-        shipType: vessel.design?.aisShipType?.value.id,
+        shipType: vessel.design?.aisShipType?.value?.id,
         ais: {
           class: vessel.sensors?.ais?.class?.value,
           fromBow: vessel.sensors?.ais?.fromBow?.value,
@@ -445,7 +445,7 @@ module.exports = function(app) {
         speed = 0;
       }
 
-      let shipType = vessel.design?.aisShipType?.value.name;
+      let shipType = vessel.design?.aisShipType?.value?.name;
       if (!shipType) {
         shipType = 'Unknown';
       }
